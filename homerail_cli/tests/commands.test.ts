@@ -12,6 +12,7 @@ import {
   mergeManagerAdminOrigins,
   shouldAbortStartForModelConfig,
   shouldServeStaticAgentUi,
+  staticUiServerEnv,
 } from "../src/commands/runtime.js";
 import { createLaunchAgentPlist, installRuntimeService, uninstallRuntimeService } from "../src/local-service-lifecycle.js";
 
@@ -2081,10 +2082,55 @@ describe("runtime command", () => {
   it("derives exact UI proxy Origins while preserving explicit trusted Origins", () => {
     expect(mergeManagerAdminOrigins(
       "https://admin.example.test",
-      ["https://ui.example.test/app", "http://localhost:19193"],
+      ["https://ui.example.test", "http://localhost:19193"],
     )).toBe("http://localhost:19193,https://admin.example.test,https://ui.example.test");
     expect(() => mergeManagerAdminOrigins("https://bad.example.test/path", []))
       .toThrow(/without paths/);
+  });
+
+  it("applies one canonical exact Origin rule to Manager allowlist entries and UI public URLs", () => {
+    expect(mergeManagerAdminOrigins(undefined, ["https://UI.Example.test:443", "http://localhost:80"]))
+      .toBe("http://localhost,https://ui.example.test");
+    expect(mergeManagerAdminOrigins("https://Admin.Example.test:443", []))
+      .toBe("https://admin.example.test");
+    for (const invalid of [
+      "https://ui.example.test/app",
+      "https://*.example.test",
+      "https://user:pass@ui.example.test",
+      "ftp://ui.example.test",
+      "not-a-url",
+    ]) {
+      expect(() => mergeManagerAdminOrigins(undefined, [invalid]), invalid)
+        .toThrow(/exact http\(s\) Origin/);
+      expect(() => mergeManagerAdminOrigins(invalid, []), invalid)
+        .toThrow(/exact http\(s\) Origins without paths/);
+    }
+  });
+
+  it("propagates only an explicit UI public URL into the static UI server environment", () => {
+    const base = {
+      homerailHome: tempHome,
+      staticUiDir: join(tempHome, "agent-ui", "dist"),
+      host: "127.0.0.1",
+      port: 19192,
+      protocol: "https" as const,
+      managerHttp: "http://localhost:19191",
+    };
+
+    expect(staticUiServerEnv({ ...base, explicitPublicUrl: "https://external.example" }))
+      .toMatchObject({
+        HOMERAIL_HOME: tempHome,
+        HOMERAIL_STATIC_UI_DIR: base.staticUiDir,
+        HOMERAIL_UI_HOST: "127.0.0.1",
+        HOMERAIL_UI_PORT: "19192",
+        HOMERAIL_MANAGER_HTTP: "http://localhost:19191",
+        HOMERAIL_MANAGER_WS: "ws://localhost:19191",
+        HOMERAIL_UI_HTTPS: "1",
+        HOMERAIL_UI_PUBLIC_URL: "https://external.example",
+      });
+    expect(staticUiServerEnv(base)).not.toHaveProperty("HOMERAIL_UI_PUBLIC_URL");
+    expect(staticUiServerEnv({ ...base, protocol: "http" as const }))
+      .not.toHaveProperty("HOMERAIL_UI_HTTPS");
   });
 
   it("launches the Agent UI dev server directly through Node", () => {

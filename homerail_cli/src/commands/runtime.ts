@@ -36,6 +36,7 @@ import {
   type LocalRuntimeServiceStatus,
   type RuntimeServiceControlStatus,
 } from "../local-service-lifecycle.js";
+import { normalizeExactHttpOrigin } from "../ui-admin-proxy.js";
 
 interface GlobalOpts {
   json?: boolean;
@@ -158,33 +159,32 @@ type RuntimeServiceName = "manager" | "node" | "worker" | "ui" | "ui-https";
 
 const MANAGER_ADMIN_ORIGINS_ENV = "HOMERAIL_MANAGER_ADMIN_ORIGINS";
 
-/** Merge operator-provided exact Origins with the two UI proxy origins. */
+/**
+ * Merge operator-provided exact Origins with the two UI proxy origins.
+ * Both inputs are validated with the same canonical exact HTTP(S) Origin rule
+ * the static UI mutation proxy applies, so the Manager allowlist and the UI
+ * proxy never diverge on what counts as an exact Origin.
+ */
 export function mergeManagerAdminOrigins(
   configured: string | undefined,
   uiUrls: readonly string[],
 ): string {
   const origins = new Set<string>();
   for (const value of (configured ?? "").split(",").map((entry) => entry.trim()).filter(Boolean)) {
-    let parsed: URL;
-    try { parsed = new URL(value); } catch { throw new Error(`${MANAGER_ADMIN_ORIGINS_ENV} contains an invalid Origin`); }
-    if (
-      (parsed.protocol !== "http:" && parsed.protocol !== "https:")
-      || parsed.username
-      || parsed.password
-      || parsed.pathname !== "/"
-      || parsed.search
-      || parsed.hash
-      || parsed.origin !== value
-    ) throw new Error(`${MANAGER_ADMIN_ORIGINS_ENV} must contain exact http(s) Origins without paths`);
-    origins.add(value);
+    const normalized = normalizeExactHttpOrigin(value);
+    if (!normalized) {
+      throw new Error(`${MANAGER_ADMIN_ORIGINS_ENV} must contain exact http(s) Origins without paths`);
+    }
+    origins.add(normalized);
   }
   for (const value of uiUrls) {
-    let parsed: URL;
-    try { parsed = new URL(value); } catch { throw new Error(`Agent UI public URL is invalid: ${value}`); }
-    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-      throw new Error(`Agent UI public URL must use http(s): ${value}`);
+    const normalized = normalizeExactHttpOrigin(value);
+    if (!normalized) {
+      throw new Error(
+        `Agent UI public URL must be an exact http(s) Origin without wildcard, path, query, fragment, or credentials: ${value}`,
+      );
     }
-    origins.add(parsed.origin);
+    origins.add(normalized);
   }
   return [...origins].sort().join(",");
 }
@@ -711,6 +711,23 @@ function startService(name: RuntimeServiceName, relativeScript: string, env: Rec
   return child.pid;
 }
 
+/**
+ * Explicit operator-configured public UI URL, mirroring the explicit sources
+ * of configuredUiPublicUrl (--public-url flag, HOMERAIL_UI_PUBLIC_URL, then
+ * ui.publicUrl). Returns undefined when the URL would be derived from the
+ * bind host/port, so callers can keep no-config behavior strictly
+ * request-derived.
+ */
+function explicitUiPublicUrl(
+  config: ReturnType<typeof loadLocalConfig>,
+  override?: string,
+): string | undefined {
+  if (override?.trim()) return override.trim().replace(/\/+$/, "");
+  if (process.env.HOMERAIL_UI_PUBLIC_URL?.trim()) return process.env.HOMERAIL_UI_PUBLIC_URL.trim().replace(/\/+$/, "");
+  if (config.ui?.publicUrl?.trim()) return config.ui.publicUrl.trim().replace(/\/+$/, "");
+  return undefined;
+}
+
 async function startUiServer(globalOpts: GlobalOpts, opts: UiStartOpts = {}): Promise<UiStatus> {
   ensureHomerailHome();
   const cfg = loadLocalConfig();
@@ -723,10 +740,16 @@ async function startUiServer(globalOpts: GlobalOpts, opts: UiStartOpts = {}): Pr
   }
 
   ensureAgentUiRuntime();
+  const explicitPublicUrl = explicitUiPublicUrl(cfg, opts.publicUrl);
+  if (explicitPublicUrl !== undefined && normalizeExactHttpOrigin(explicitPublicUrl) === undefined) {
+    throw new Error(
+      `Agent UI public URL must be an exact http(s) Origin without wildcard, path, query, fragment, or credentials: ${explicitPublicUrl}`,
+    );
+  }
   const managerUrl = opts.managerUrl !== undefined || globalOpts.baseUrl
     ? configuredManagerAccessUrl(cfg, opts.managerUrl || globalOpts.baseUrl)
     : undefined;
-  const httpsPublicUrl = configuredUiPublicUrl(cfg, host, httpsPort, opts.publicUrl);
+  const httpsPublicUrl = explicitPublicUrl ?? configuredUiPublicUrl(cfg, host, httpsPort);
   const httpPublicUrl = configuredUiHttpPublicUrl(cfg, host, httpPort);
   const managerPort = String(configuredManagerPort(managerUrl ? { ...cfg, manager: { ...cfg.manager, url: managerUrl } } : cfg));
   const textModeEnabled = resolveTextModeEnabled(opts.enableTextMode);
@@ -750,6 +773,7 @@ async function startUiServer(globalOpts: GlobalOpts, opts: UiStartOpts = {}): Pr
         managerUrl,
         managerPort,
         publicUrl: httpsPublicUrl,
+        explicitPublicUrl,
         textModeEnabled,
         certificate,
       });
@@ -799,6 +823,13 @@ interface StartUiProcessOpts {
   managerUrl?: string;
   managerPort: string;
   publicUrl: string;
+  /**
+   * Operator-configured public UI URL (--ui-public-url /
+   * HOMERAIL_UI_PUBLIC_URL / ui.publicUrl), only when explicitly set. Derived
+   * URLs stay out of the static server so no-config behavior remains strictly
+   * request-derived.
+   */
+  explicitPublicUrl?: string;
   textModeEnabled: boolean;
   certificate?: UiCertificate;
 }
@@ -812,6 +843,39 @@ export function agentUiDevServerCommand(agentUiDir: string): { command: string; 
   return {
     command: process.execPath,
     args: [path.join(agentUiDir, "node_modules", "vite", "bin", "vite.js")],
+  };
+}
+
+/**
+ * Environment for the zero-dependency static UI server. `HOMERAIL_UI_PUBLIC_URL`
+ * is only present when the operator explicitly configured a public UI URL, so
+ * the proxy's mutation authorization stays strictly request-derived otherwise.
+ */
+export function staticUiServerEnv(opts: {
+  homerailHome: string;
+  staticUiDir: string;
+  host: string;
+  port: number;
+  protocol: "http" | "https";
+  managerHttp: string;
+  explicitPublicUrl?: string;
+  certificate?: UiCertificate;
+}): Record<string, string> {
+  return {
+    HOMERAIL_HOME: opts.homerailHome,
+    HOMERAIL_STATIC_UI_DIR: opts.staticUiDir,
+    HOMERAIL_UI_HOST: opts.host,
+    HOMERAIL_UI_PORT: String(opts.port),
+    HOMERAIL_MANAGER_HTTP: opts.managerHttp,
+    HOMERAIL_MANAGER_WS: opts.managerHttp.replace(/^http/, "ws"),
+    ...(opts.protocol === "https"
+      ? {
+        HOMERAIL_UI_HTTPS: "1",
+        HOMERAIL_UI_HTTPS_KEY: opts.certificate?.keyPath || "",
+        HOMERAIL_UI_HTTPS_CERT: opts.certificate?.certPath || "",
+      }
+      : {}),
+    ...(opts.explicitPublicUrl ? { HOMERAIL_UI_PUBLIC_URL: opts.explicitPublicUrl } : {}),
   };
 }
 
@@ -829,25 +893,21 @@ function startUiProcess(opts: StartUiProcessOpts): number {
   let child: import("child_process").ChildProcess;
   if (serveStatic) {
     const serverScript = path.join(resolveRepoRoot(), "homerail_cli", "dist", "static-ui-server.js");
-    const managerWs = managerHttp.replace(/^http/, "ws");
     child = spawn(process.execPath, [serverScript], {
       cwd: agentUiDir,
       env: {
         ...loadLocalSecrets(),
         ...process.env,
-        HOMERAIL_HOME: getHomerailHome(),
-        HOMERAIL_STATIC_UI_DIR: path.join(agentUiDir, "dist"),
-        HOMERAIL_UI_HOST: opts.host,
-        HOMERAIL_UI_PORT: String(opts.port),
-        HOMERAIL_MANAGER_HTTP: managerHttp,
-        HOMERAIL_MANAGER_WS: managerWs,
-        ...(opts.protocol === "https"
-          ? {
-            HOMERAIL_UI_HTTPS: "1",
-            HOMERAIL_UI_HTTPS_KEY: opts.certificate?.keyPath || "",
-            HOMERAIL_UI_HTTPS_CERT: opts.certificate?.certPath || "",
-          }
-          : {}),
+        ...staticUiServerEnv({
+          homerailHome: getHomerailHome(),
+          staticUiDir: path.join(agentUiDir, "dist"),
+          host: opts.host,
+          port: opts.port,
+          protocol: opts.protocol,
+          managerHttp,
+          explicitPublicUrl: opts.explicitPublicUrl,
+          certificate: opts.certificate,
+        }),
       },
       detached: true,
       shell: false,
