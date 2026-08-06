@@ -96,4 +96,24 @@ describe('AgentVoiceCockpit ASR session lifecycle', () => {
     expect(emptyTranscriptBranch).not.toContain('recoverAsrRealtimeAfterFailure')
     expect(failureCatch).toContain('await recoverAsrRealtimeAfterFailure(token)')
   })
+
+  it('routes terminal events through the utterance-scoped transcription attempt', () => {
+    const finish = sourceBetween(
+      cockpitSource,
+      'function finishAsrUtterance(): Promise<string>',
+      'function handleAsrRealtimeMessage('
+    )
+    const settle = sourceBetween(
+      cockpitSource,
+      'function resolveAsrFinal(text: string): void',
+      'function cleanAsrTranscript('
+    )
+
+    expect(finish).toContain('asrPendingTranscription = transcription')
+    expect(finish).toContain('asrPendingTranscription === transcription')
+    expect(settle).toContain('asrPendingTranscription?.resolve(text)')
+    expect(settle).toContain('asrPendingTranscription?.reject(error)')
+    expect(settle).not.toContain('asrDeadlineController.resolve(')
+    expect(settle).not.toContain('asrDeadlineController.reject(')
+  })
 })

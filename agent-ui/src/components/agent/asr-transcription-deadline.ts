@@ -95,6 +95,14 @@ export interface AsrTranscriptionDeadlineOptions {
   defaultTimeoutMessage?: string
 }
 
+/** Promise and terminal callbacks scoped to the utterance created by finish(). */
+export interface AsrTranscriptionAttempt {
+  readonly utteranceId: number
+  readonly promise: Promise<string>
+  resolve(text: string): void
+  reject(error: Error): void
+}
+
 interface PendingAsrUtterance {
   id: number
   resolve: (text: string) => void
@@ -135,8 +143,7 @@ export class AsrTranscriptionDeadlineController {
 
   /** Records a valid strategy announced by `session.ready`; invalid values fail closed. */
   handleSessionReady(strategy: unknown): void {
-    const normalized = normalizeAsrStrategy(strategy)
-    if (normalized) this.sessionStrategy = normalized
+    this.applyStrategy(strategy)
   }
 
   /**
@@ -145,6 +152,10 @@ export class AsrTranscriptionDeadlineController {
    * finish timestamp so repeated events never slide the absolute deadline.
    */
   handleTranscriptionProcessing(strategy: unknown): void {
+    this.applyStrategy(strategy)
+  }
+
+  private applyStrategy(strategy: unknown): void {
     const normalized = normalizeAsrStrategy(strategy)
     if (!normalized) return
     this.sessionStrategy = normalized
@@ -176,7 +187,7 @@ export class AsrTranscriptionDeadlineController {
    * Ends capture and waits for the transcript. Any earlier pending utterance is
    * rejected deterministically so it is never orphaned.
    */
-  finish(options: { timeoutMessage?: string } = {}): Promise<string> {
+  finish(options: { timeoutMessage?: string } = {}): AsrTranscriptionAttempt {
     const finishedAt = this.scheduler.now()
     const capturedAudioMs = this.capturedAudioMs
     this.supersedePending()
@@ -185,7 +196,7 @@ export class AsrTranscriptionDeadlineController {
     const deadlineAt = finishedAt + deadlineMs
     const utteranceId = ++this.utteranceSequence
     const timeoutMessage = options.timeoutMessage ?? this.defaultTimeoutMessage
-    return new Promise<string>((resolve, reject) => {
+    const promise = new Promise<string>((resolve, reject) => {
       const timer = this.scheduler.setTimeout(() => this.handleTimeout(utteranceId), deadlineMs)
       this.pending = {
         id: utteranceId,
@@ -198,19 +209,25 @@ export class AsrTranscriptionDeadlineController {
         timeoutMessage
       }
     })
+    return {
+      utteranceId,
+      promise,
+      resolve: (text: string) => this.resolveUtterance(utteranceId, text),
+      reject: (error: Error) => this.rejectUtterance(utteranceId, error)
+    }
   }
 
-  /** Settles the pending utterance with the final transcript, exactly once. */
-  resolve(text: string): void {
-    const pending = this.takePending()
+  /** Settles only the matching pending utterance with the final transcript. */
+  private resolveUtterance(utteranceId: number, text: string): void {
+    const pending = this.takePending(utteranceId)
     if (!pending) return
     this.capturedAudioMs = 0
     pending.resolve(text)
   }
 
-  /** Settles the pending utterance with an error, exactly once. */
-  reject(error: Error): void {
-    const pending = this.takePending()
+  /** Settles only the matching pending utterance with an error. */
+  private rejectUtterance(utteranceId: number, error: Error): void {
+    const pending = this.takePending(utteranceId)
     if (!pending) return
     this.capturedAudioMs = 0
     pending.reject(error)
@@ -227,9 +244,11 @@ export class AsrTranscriptionDeadlineController {
     if (pending) pending.reject(error ?? new Error(ASR_SESSION_DISCONNECTED_MESSAGE))
   }
 
-  private takePending(): PendingAsrUtterance | null {
+  private takePending(expectedUtteranceId?: number): PendingAsrUtterance | null {
     const pending = this.pending
-    if (!pending) return null
+    if (!pending || (expectedUtteranceId !== undefined && pending.id !== expectedUtteranceId)) {
+      return null
+    }
     this.pending = null
     this.scheduler.clearTimeout(pending.timer)
     return pending

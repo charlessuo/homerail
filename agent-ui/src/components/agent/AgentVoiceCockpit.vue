@@ -64,7 +64,8 @@ import {
 import {
   ASR_CONNECTION_TIMEOUT_MS,
   AsrTranscriptionDeadlineController,
-  isBatchAsrStrategy
+  isBatchAsrStrategy,
+  type AsrTranscriptionAttempt
 } from '@/components/agent/asr-transcription-deadline'
 import { voiceWs } from '@/api/clients/events-ws'
 import { useOnboardingStatus } from '@/composables/useOnboardingStatus'
@@ -431,6 +432,7 @@ let nativeGamepadAnalogAt = 0
 let asrSocket: WebSocket | null = null
 let asrSocketGeneration = 0
 let asrTranscriptRaw = ''
+let asrPendingTranscription: AsrTranscriptionAttempt | null = null
 const asrDeadlineController = new AsrTranscriptionDeadlineController()
 let lastSubmittedVoiceTranscriptKey = ''
 let lastSubmittedVoiceTranscriptAt = 0
@@ -4933,8 +4935,17 @@ function finishAsrUtterance(): Promise<string> {
   const transcription = asrDeadlineController.finish({
     timeoutMessage: t('voice.errors.asrTranscriptionTimeout')
   })
-  asrSocket?.send(JSON.stringify({ type: 'finish' }))
-  return transcription
+  asrPendingTranscription = transcription
+  try {
+    asrSocket.send(JSON.stringify({ type: 'finish' }))
+  } catch (sendError) {
+    transcription.reject(
+      sendError instanceof Error ? sendError : new Error(t('voice.errors.asrResponse'))
+    )
+  }
+  return transcription.promise.finally(() => {
+    if (asrPendingTranscription === transcription) asrPendingTranscription = null
+  })
 }
 
 function handleAsrRealtimeMessage(payload: unknown): void {
@@ -4980,12 +4991,12 @@ function handleAsrRealtimeMessage(payload: unknown): void {
 
 function resolveAsrFinal(text: string): void {
   asrTranscriptRaw = ''
-  asrDeadlineController.resolve(text)
+  asrPendingTranscription?.resolve(text)
 }
 
 function rejectAsrFinal(error: Error): void {
   asrTranscriptRaw = ''
-  asrDeadlineController.reject(error)
+  asrPendingTranscription?.reject(error)
 }
 
 function cleanAsrTranscript(text: string): string {

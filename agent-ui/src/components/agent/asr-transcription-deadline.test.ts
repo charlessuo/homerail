@@ -67,7 +67,10 @@ type TrackedOutcome =
   | { status: 'resolved'; text: string }
   | { status: 'rejected'; error: Error }
 
-function trackTranscription(promise: Promise<string>): () => TrackedOutcome {
+function trackTranscription(
+  transcription: Promise<string> | { promise: Promise<string> }
+): () => TrackedOutcome {
+  const promise = 'promise' in transcription ? transcription.promise : transcription
   let outcome: TrackedOutcome = { status: 'pending' }
   promise.then(
     text => {
@@ -287,6 +290,31 @@ describe('AsrTranscriptionDeadlineController promotion', () => {
     expect(rejectedMessage(outcome())).toBe('ASR transcription timed out')
   })
 
+  it('also promotes an in-flight deadline when session.ready arrives late', async () => {
+    const scheduler = new FakeDeadlineScheduler()
+    const controller = new AsrTranscriptionDeadlineController({ scheduler })
+    controller.beginUtterance()
+    controller.recordSentAudio(320000, 16000)
+    const outcome = trackTranscription(controller.finish())
+
+    scheduler.advance(8000)
+    controller.handleSessionReady('emulated_batch')
+    expect(controller.getSessionStrategy()).toBe('emulated_batch')
+
+    scheduler.advance(1000)
+    await flushMicrotasks()
+    expect(outcome().status).toBe('pending')
+
+    scheduler.advance(45999)
+    await flushMicrotasks()
+    expect(outcome().status).toBe('pending')
+
+    scheduler.advance(1)
+    await flushMicrotasks()
+    expect(scheduler.nowMs).toBe(55000)
+    expect(rejectedMessage(outcome())).toBe('ASR transcription timed out')
+  })
+
   it('promotes a pending native deadline when the batch strategy arrives late', async () => {
     const scheduler = new FakeDeadlineScheduler()
     const controller = new AsrTranscriptionDeadlineController({ scheduler })
@@ -390,12 +418,13 @@ describe('AsrTranscriptionDeadlineController terminal paths', () => {
     controller.handleSessionReady('emulated_batch')
     controller.beginUtterance()
     controller.recordSentAudio(320000, 16000)
-    const outcome = trackTranscription(controller.finish())
+    const transcription = controller.finish()
+    const outcome = trackTranscription(transcription)
 
     scheduler.advance(100)
-    controller.resolve('hello')
-    controller.resolve('second resolve')
-    controller.reject(new Error('late error'))
+    transcription.resolve('hello')
+    transcription.resolve('second resolve')
+    transcription.reject(new Error('late error'))
     await flushMicrotasks()
 
     const settled = outcome()
@@ -412,11 +441,12 @@ describe('AsrTranscriptionDeadlineController terminal paths', () => {
     const scheduler = new FakeDeadlineScheduler()
     const controller = new AsrTranscriptionDeadlineController({ scheduler })
     controller.beginUtterance()
-    const outcome = trackTranscription(controller.finish())
+    const transcription = controller.finish()
+    const outcome = trackTranscription(transcription)
 
     scheduler.advance(100)
-    controller.reject(new Error('boom'))
-    controller.resolve('late text')
+    transcription.reject(new Error('boom'))
+    transcription.resolve('late text')
     await flushMicrotasks()
 
     expect(rejectedMessage(outcome())).toBe('boom')
@@ -510,11 +540,18 @@ describe('AsrTranscriptionDeadlineController per-utterance isolation', () => {
   it('settles the earlier promise deterministically when finish is called twice', async () => {
     const scheduler = new FakeDeadlineScheduler()
     const controller = new AsrTranscriptionDeadlineController({ scheduler })
-    const first = trackTranscription(controller.finish())
-    const second = trackTranscription(controller.finish())
+    const firstTranscription = controller.finish()
+    const first = trackTranscription(firstTranscription)
+    const secondTranscription = controller.finish()
+    const second = trackTranscription(secondTranscription)
     await flushMicrotasks()
 
     expect(rejectedMessage(first())).toBe(ASR_UTTERANCE_SUPERSEDED_MESSAGE)
+    expect(second().status).toBe('pending')
+
+    firstTranscription.resolve('stale text')
+    firstTranscription.reject(new Error('stale error'))
+    await flushMicrotasks()
     expect(second().status).toBe('pending')
 
     scheduler.advance(9000)
@@ -530,9 +567,10 @@ describe('AsrTranscriptionDeadlineController per-utterance isolation', () => {
 
     controller.beginUtterance()
     controller.recordSentAudio(960000, 16000)
-    const first = trackTranscription(controller.finish())
+    const firstTranscription = controller.finish()
+    const first = trackTranscription(firstTranscription)
     scheduler.advance(100)
-    controller.resolve('done')
+    firstTranscription.resolve('done')
     await flushMicrotasks()
     expect(first()).toEqual({ status: 'resolved', text: 'done' })
     expect(controller.getCapturedAudioMs()).toBe(0)
