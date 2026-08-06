@@ -38,7 +38,7 @@ class FakeAsrSocket implements AsrControlSocket {
 }
 
 describe('Agent Voice Cockpit ASR lifecycle helpers', () => {
-  it('clears the prior utterance error and sends start only for an open session', () => {
+  it('keeps a late batch strategy on the initial server buffer and resets later utterances', async () => {
     const controller = new AsrTranscriptionDeadlineController({
       scheduler: new FakeDeadlineScheduler()
     })
@@ -56,7 +56,13 @@ describe('Agent Voice Cockpit ASR lifecycle helpers', () => {
     expect(error).toBe('')
     expect(socket.sent).toEqual([])
 
+    controller.recordSentAudio(16_000, 16_000)
     controller.handleSessionReady('emulated_batch')
+    expect(socket.sent).toEqual([])
+    const firstAttempt = controller.finish()
+    firstAttempt.resolve('first transcript')
+    await expect(firstAttempt.promise).resolves.toBe('first transcript')
+
     beginAsrRealtimeUtterance({ controller, socket, openReadyState: 1, onBegin: () => {} })
     expect(socket.sent).toEqual([JSON.stringify({ type: 'start' })])
 

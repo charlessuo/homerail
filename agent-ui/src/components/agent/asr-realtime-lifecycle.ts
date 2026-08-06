@@ -26,6 +26,9 @@ export function beginAsrRealtimeUtterance({
   controller.beginUtterance()
   if (!socket || socket.readyState !== openReadyState) return
   onBegin()
+  // The batch server's initial state already represents the first `start`. If
+  // `session.ready` arrives after audio begins, a retroactive start would discard
+  // that buffered audio. The session-scoped strategy resets every later utterance.
   if (!isBatchAsrStrategy(controller.getSessionStrategy())) return
   socket.send(JSON.stringify({ type: 'start' }))
 }
