@@ -1,10 +1,12 @@
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import * as fs from "node:fs";
 import * as http from "node:http";
+import * as https from "node:https";
 import * as net from "node:net";
 import * as os from "node:os";
 import * as path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
+import { createProgram } from "../src/index.js";
 
 const children: ChildProcess[] = [];
 const servers: http.Server[] = [];
@@ -813,4 +815,510 @@ async function waitUntil(check: () => Promise<boolean>): Promise<void> {
     await new Promise((resolve) => setTimeout(resolve, 25));
   }
   throw new Error("static UI did not become ready");
+}
+
+describe("runtime UI Origin propagation through hr ui start", () => {
+  afterAll(() => {
+    if (sharedRuntimeRepoRoot) {
+      fs.rmSync(sharedRuntimeRepoRoot, { recursive: true, force: true });
+      sharedRuntimeRepoRoot = undefined;
+    }
+  });
+
+  afterEach(() => {
+    for (const harness of runtimeHarnesses.splice(0)) {
+      for (const name of ["ui-https", "ui"] as const) {
+        const pid = runtimePidFile(harness.home, name);
+        if (pid === undefined) continue;
+        try {
+          process.kill(-pid, "SIGTERM");
+        } catch {
+          try {
+            process.kill(pid, "SIGTERM");
+          } catch {
+            // Already exited.
+          }
+        }
+      }
+    }
+  });
+
+  it("propagates the explicit external Origin from flag, environment, and stored config into both static listeners", async () => {
+    const harness = await createRuntimeHarness();
+    fs.mkdirSync(path.join(harness.home, "secrets"), { recursive: true, mode: 0o700 });
+    fs.writeFileSync(
+      path.join(harness.home, "secrets", "env"),
+      "HOMERAIL_DAG_MUTATION_TOKEN=internal-mutation-token\n",
+      { mode: 0o600 },
+    );
+
+    // Source 1: the CLI flag, deliberately non-canonical.
+    const flag = await runUiStart(harness, ["--public-url", "https://UI.Example.test:443/"]);
+    expect(flag.errors).toEqual([]);
+    expect(flag.status.uiHttpsPidRunning).toBe(true);
+    expect(flag.status.uiHttpPidRunning).toBe(true);
+
+    // Both children are launched from one normalized Origin and the persisted
+    // state records the effective authorization configuration.
+    expect(runtimeStateFile(harness.home, "ui-https")?.explicitPublicUrl).toBe("https://ui.example.test");
+    expect(runtimeStateFile(harness.home, "ui")?.explicitPublicUrl).toBe("https://ui.example.test");
+    expect(flag.status.uiHttpsPublicUrl).toBe("https://ui.example.test");
+    expect(flag.status.uiHttpPublicUrl).toBe("https://ui.example.test");
+
+    for (const protocol of ["https", "http"] as const) {
+      const port = protocol === "https" ? harness.httpsPort : harness.httpPort;
+      // The external HTTPS Origin is accepted by both listeners; the HTTP
+      // fallback covers TLS-terminating reverse proxies.
+      expect((await mutationRequest({
+        protocol,
+        port,
+        headers: {
+          Origin: "https://ui.example.test",
+          "Sec-Fetch-Site": "same-origin",
+          Authorization: "Bearer browser-supplied",
+          "x-homerail-dag-token": "browser-supplied-token",
+        },
+      })).status).toBe(200);
+      // Unrelated Origins and cross-site submissions stay rejected.
+      expect((await mutationRequest({
+        protocol,
+        port,
+        headers: { Origin: "https://evil.example.test", "Sec-Fetch-Site": "same-origin" },
+      })).status).toBe(403);
+      expect((await mutationRequest({
+        protocol,
+        port,
+        headers: { Origin: "https://ui.example.test", "Sec-Fetch-Site": "cross-site" },
+      })).status).toBe(403);
+    }
+
+    // Browser credentials are stripped and the internal mutation token is
+    // injected on the proxied hop for both listeners.
+    expect(harness.received[0]).toMatchObject({
+      origin: "https://ui.example.test",
+      authorization: undefined,
+      mutationToken: "internal-mutation-token",
+    });
+    expect(harness.received[1]).toMatchObject({
+      origin: "https://ui.example.test",
+      authorization: undefined,
+      mutationToken: "internal-mutation-token",
+    });
+
+    // Direct local access keeps working through the request-derived Origin,
+    // and read-only requests stay unaffected.
+    const httpSelfOrigin = `http://127.0.0.1:${harness.httpPort}`;
+    expect((await mutationRequest({
+      protocol: "http",
+      port: harness.httpPort,
+      headers: { Origin: httpSelfOrigin, "Sec-Fetch-Site": "same-origin" },
+    })).status).toBe(200);
+    expect((await mutationRequest({
+      protocol: "http",
+      port: harness.httpPort,
+      method: "GET",
+      path: "/api/read",
+    })).status).toBe(200);
+
+    // Source 2: HOMERAIL_UI_PUBLIC_URL. A changed effective Origin restarts
+    // both live listeners and the new Origin is the one enforced.
+    const flagPids = runtimePids(harness.home);
+    const fromEnv = await runUiStart(harness, [], { HOMERAIL_UI_PUBLIC_URL: "https://env-origin.example.test" });
+    expect(fromEnv.errors).toEqual([]);
+    const envPids = runtimePids(harness.home);
+    expect(envPids.https).not.toBe(flagPids.https);
+    expect(envPids.http).not.toBe(flagPids.http);
+    await waitForRuntimePidExit(flagPids.https);
+    await waitForRuntimePidExit(flagPids.http);
+    for (const protocol of ["https", "http"] as const) {
+      const port = protocol === "https" ? harness.httpsPort : harness.httpPort;
+      expect((await mutationRequest({
+        protocol,
+        port,
+        headers: { Origin: "https://env-origin.example.test", "Sec-Fetch-Site": "same-origin" },
+      })).status).toBe(200);
+      expect((await mutationRequest({
+        protocol,
+        port,
+        headers: { Origin: "https://ui.example.test", "Sec-Fetch-Site": "same-origin" },
+      })).status).toBe(403);
+    }
+
+    // Source 3: stored ui.publicUrl. Same restart-and-apply behavior.
+    fs.writeFileSync(
+      path.join(harness.home, "config.json"),
+      `${JSON.stringify({ ui: { publicUrl: "https://stored.example.test" } }, null, 2)}\n`,
+    );
+    const fromConfig = await runUiStart(harness, []);
+    expect(fromConfig.errors).toEqual([]);
+    const configPids = runtimePids(harness.home);
+    expect(configPids.https).not.toBe(envPids.https);
+    expect(configPids.http).not.toBe(envPids.http);
+    await waitForRuntimePidExit(envPids.https);
+    await waitForRuntimePidExit(envPids.http);
+    expect(runtimeStateFile(harness.home, "ui-https")?.explicitPublicUrl).toBe("https://stored.example.test");
+    expect(runtimeStateFile(harness.home, "ui")?.explicitPublicUrl).toBe("https://stored.example.test");
+    for (const protocol of ["https", "http"] as const) {
+      const port = protocol === "https" ? harness.httpsPort : harness.httpPort;
+      expect((await mutationRequest({
+        protocol,
+        port,
+        headers: { Origin: "https://stored.example.test", "Sec-Fetch-Site": "same-origin" },
+      })).status).toBe(200);
+      expect((await mutationRequest({
+        protocol,
+        port,
+        headers: { Origin: "https://env-origin.example.test", "Sec-Fetch-Site": "same-origin" },
+      })).status).toBe(403);
+    }
+  }, 120_000);
+
+  it("restarts stale live UI processes when the explicit Origin is added, changed, or removed; keeps unchanged Origins stable", async () => {
+    const harness = await createRuntimeHarness();
+    const originA = "https://origin-a.example.test";
+    const originB = "https://origin-b.example.test";
+    const httpSelfOrigin = `http://127.0.0.1:${harness.httpPort}`;
+    const httpsSelfOrigin = `https://127.0.0.1:${harness.httpsPort}`;
+
+    // Baseline: no explicit Origin anywhere -> strict request-derived
+    // authorization on both listeners.
+    const baseline = await runUiStart(harness, []);
+    expect(baseline.errors).toEqual([]);
+    expect(baseline.status.uiHttpsPidRunning).toBe(true);
+    expect(baseline.status.uiHttpPidRunning).toBe(true);
+    expect(runtimeStateFile(harness.home, "ui-https")?.explicitPublicUrl).toBeUndefined();
+    expect(runtimeStateFile(harness.home, "ui")?.explicitPublicUrl).toBeUndefined();
+    const baselinePids = runtimePids(harness.home);
+    expect((await mutationRequest({
+      protocol: "http",
+      port: harness.httpPort,
+      headers: { Origin: originA, "Sec-Fetch-Site": "same-origin" },
+    })).status).toBe(403);
+    expect((await mutationRequest({
+      protocol: "http",
+      port: harness.httpPort,
+      headers: { Origin: httpSelfOrigin, "Sec-Fetch-Site": "same-origin" },
+    })).status).toBe(200);
+
+    // undefined -> value: both stale listeners are restarted and the new
+    // Origin is enforced; status reports the processes actually running.
+    const added = await runUiStart(harness, ["--public-url", originA]);
+    expect(added.errors).toEqual([]);
+    const addedPids = runtimePids(harness.home);
+    expect(addedPids.https).not.toBe(baselinePids.https);
+    expect(addedPids.http).not.toBe(baselinePids.http);
+    await waitForRuntimePidExit(baselinePids.https);
+    await waitForRuntimePidExit(baselinePids.http);
+    expect(pidAlive(addedPids.https)).toBe(true);
+    expect(pidAlive(addedPids.http)).toBe(true);
+    expect(added.status.uiHttpsPid).toBe(addedPids.https);
+    expect(added.status.uiHttpPid).toBe(addedPids.http);
+    expect(runtimeStateFile(harness.home, "ui-https")?.explicitPublicUrl).toBe(originA);
+    expect(runtimeStateFile(harness.home, "ui")?.explicitPublicUrl).toBe(originA);
+    for (const protocol of ["https", "http"] as const) {
+      const port = protocol === "https" ? harness.httpsPort : harness.httpPort;
+      expect((await mutationRequest({
+        protocol,
+        port,
+        headers: { Origin: originA, "Sec-Fetch-Site": "same-origin" },
+      })).status).toBe(200);
+    }
+
+    // value -> identical value: healthy processes are not restarted.
+    const unchanged = await runUiStart(harness, ["--public-url", originA]);
+    expect(unchanged.errors).toEqual([]);
+    const unchangedPids = runtimePids(harness.home);
+    expect(unchangedPids).toEqual(addedPids);
+    expect(unchanged.status.uiHttpsPid).toBe(addedPids.https);
+    expect(unchanged.status.uiHttpPid).toBe(addedPids.http);
+
+    // value -> different value: both listeners restart; the old Origin is
+    // rejected after relaunch.
+    const changed = await runUiStart(harness, ["--public-url", originB]);
+    expect(changed.errors).toEqual([]);
+    const changedPids = runtimePids(harness.home);
+    expect(changedPids.https).not.toBe(addedPids.https);
+    expect(changedPids.http).not.toBe(addedPids.http);
+    await waitForRuntimePidExit(addedPids.https);
+    await waitForRuntimePidExit(addedPids.http);
+    expect(runtimeStateFile(harness.home, "ui-https")?.explicitPublicUrl).toBe(originB);
+    expect(runtimeStateFile(harness.home, "ui")?.explicitPublicUrl).toBe(originB);
+    for (const protocol of ["https", "http"] as const) {
+      const port = protocol === "https" ? harness.httpsPort : harness.httpPort;
+      expect((await mutationRequest({
+        protocol,
+        port,
+        headers: { Origin: originA, "Sec-Fetch-Site": "same-origin" },
+      })).status).toBe(403);
+      expect((await mutationRequest({
+        protocol,
+        port,
+        headers: { Origin: originB, "Sec-Fetch-Site": "same-origin" },
+      })).status).toBe(200);
+    }
+
+    // value -> undefined: both listeners restart and strict request-derived
+    // authorization is restored.
+    const removed = await runUiStart(harness, []);
+    expect(removed.errors).toEqual([]);
+    const removedPids = runtimePids(harness.home);
+    expect(removedPids.https).not.toBe(changedPids.https);
+    expect(removedPids.http).not.toBe(changedPids.http);
+    await waitForRuntimePidExit(changedPids.https);
+    await waitForRuntimePidExit(changedPids.http);
+    expect(runtimeStateFile(harness.home, "ui-https")?.explicitPublicUrl).toBeUndefined();
+    expect(runtimeStateFile(harness.home, "ui")?.explicitPublicUrl).toBeUndefined();
+    for (const protocol of ["https", "http"] as const) {
+      const port = protocol === "https" ? harness.httpsPort : harness.httpPort;
+      expect((await mutationRequest({
+        protocol,
+        port,
+        headers: { Origin: originB, "Sec-Fetch-Site": "same-origin" },
+      })).status).toBe(403);
+    }
+    expect((await mutationRequest({
+      protocol: "http",
+      port: harness.httpPort,
+      headers: { Origin: httpSelfOrigin, "Sec-Fetch-Site": "same-origin" },
+    })).status).toBe(200);
+    expect((await mutationRequest({
+      protocol: "https",
+      port: harness.httpsPort,
+      headers: { Origin: httpsSelfOrigin, "Sec-Fetch-Site": "same-origin" },
+    })).status).toBe(200);
+  }, 120_000);
+});
+
+interface RuntimeHarness {
+  home: string;
+  repoRoot: string;
+  managerUrl: string;
+  httpsPort: number;
+  httpPort: number;
+  received: Array<{
+    origin?: string;
+    authorization?: string;
+    mutationToken?: string;
+    method?: string;
+    path?: string;
+  }>;
+}
+
+interface RuntimeUiStartStatus {
+  uiPid?: number;
+  uiHttpsPid?: number;
+  uiHttpPid?: number;
+  uiPidRunning: boolean;
+  uiHttpsPidRunning: boolean;
+  uiHttpPidRunning: boolean;
+  uiHttpsPublicUrl?: string;
+  uiHttpPublicUrl?: string;
+}
+
+const runtimeHarnesses: RuntimeHarness[] = [];
+let sharedRuntimeRepoRoot: string | undefined;
+
+const runtimeEnvKeys = [
+  "HOMERAIL_HOME",
+  "HOMERAIL_REPO_ROOT",
+  "HOMERAIL_CONFIG_PATH",
+  "HOMERAIL_SECRETS_PATH",
+  "HOMERAIL_MANAGER_URL",
+  "HOMERAIL_MANAGER_PUBLIC_URL",
+  "HOMERAIL_UI_PORT",
+  "HOMERAIL_UI_HTTP_PORT",
+  "HOMERAIL_UI_PUBLIC_URL",
+  "HOMERAIL_UI_SERVE_STATIC",
+] as const;
+
+/**
+ * Hermetic repository root standing in for the real workspace: a prebuilt
+ * static UI server (bundled from the real `src/static-ui-server.ts`) plus the
+ * minimal agent-ui dist layout `startUiServer` expects. This lets the tests
+ * drive the actual `hr ui start` runtime lifecycle — flag parsing, Origin
+ * normalization, child environment propagation, persisted state, and restart
+ * decisions — instead of launching `static-ui-server.ts` with hand-injected
+ * environment variables.
+ */
+function runtimeRepoRoot(): string {
+  if (sharedRuntimeRepoRoot) return sharedRuntimeRepoRoot;
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "homerail-runtime-origin-repo-"));
+  fs.mkdirSync(path.join(root, "agent-ui", "dist"), { recursive: true });
+  fs.writeFileSync(
+    path.join(root, "agent-ui", "package.json"),
+    `${JSON.stringify({ name: "agent-ui", private: true }, null, 2)}\n`,
+  );
+  fs.writeFileSync(
+    path.join(root, "agent-ui", "dist", "index.html"),
+    "<!doctype html><title>runtime-origin-test</title>",
+  );
+  fs.mkdirSync(path.join(root, "homerail_cli", "dist"), { recursive: true });
+  fs.writeFileSync(
+    path.join(root, "homerail_cli", "package.json"),
+    `${JSON.stringify({ name: "homerail-cli-runtime-test", private: true, type: "module" }, null, 2)}\n`,
+  );
+  execFileSync(path.resolve("node_modules/esbuild/bin/esbuild"), [
+    path.resolve("src/static-ui-server.ts"),
+    "--bundle",
+    "--platform=node",
+    "--format=esm",
+    "--target=node20",
+    `--outfile=${path.join(root, "homerail_cli", "dist", "static-ui-server.js")}`,
+  ], { stdio: "pipe", timeout: 60_000 });
+  sharedRuntimeRepoRoot = root;
+  return root;
+}
+
+async function createRuntimeHarness(): Promise<RuntimeHarness> {
+  const repoRoot = runtimeRepoRoot();
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "homerail-runtime-origin-home-"));
+  tempDirs.push(home);
+  const received: RuntimeHarness["received"] = [];
+  const manager = http.createServer((req, res) => {
+    received.push({
+      origin: typeof req.headers.origin === "string" ? req.headers.origin : undefined,
+      authorization: typeof req.headers.authorization === "string" ? req.headers.authorization : undefined,
+      mutationToken: typeof req.headers["x-homerail-dag-token"] === "string"
+        ? req.headers["x-homerail-dag-token"]
+        : undefined,
+      method: req.method,
+      path: req.url,
+    });
+    req.resume();
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify({ success: true }));
+  });
+  servers.push(manager);
+  const managerUrl = await listen(manager, "127.0.0.1");
+  const httpsPort = await reservePort();
+  const httpPort = await reservePort();
+  return { home, repoRoot, managerUrl, httpsPort, httpPort, received };
+}
+
+async function runUiStart(
+  harness: RuntimeHarness,
+  extraArgs: string[],
+  env: Record<string, string> = {},
+): Promise<{ status: RuntimeUiStartStatus; errors: string[] }> {
+  const savedEnv: Record<string, string | undefined> = {};
+  for (const key of runtimeEnvKeys) savedEnv[key] = process.env[key];
+  for (const key of runtimeEnvKeys) delete process.env[key];
+  process.env.HOMERAIL_HOME = harness.home;
+  process.env.HOMERAIL_REPO_ROOT = harness.repoRoot;
+  process.env.HOMERAIL_UI_HTTP_PORT = String(harness.httpPort);
+  for (const [key, value] of Object.entries(env)) process.env[key] = value;
+
+  const logs: string[] = [];
+  const errors: string[] = [];
+  const logSpy = vi.spyOn(console, "log").mockImplementation((message) => {
+    logs.push(String(message));
+  });
+  const errorSpy = vi.spyOn(console, "error").mockImplementation((message) => {
+    errors.push(String(message));
+  });
+  const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+  const previousExitCode = process.exitCode;
+  process.exitCode = undefined;
+  try {
+    const program = createProgram();
+    await program.parseAsync([
+      "node",
+      "homerail",
+      "--json",
+      "--base-url",
+      harness.managerUrl,
+      "ui",
+      "start",
+      "--port",
+      String(harness.httpsPort),
+      ...extraArgs,
+    ]);
+  } finally {
+    logSpy.mockRestore();
+    errorSpy.mockRestore();
+    warnSpy.mockRestore();
+    for (const key of runtimeEnvKeys) {
+      if (savedEnv[key] === undefined) delete process.env[key];
+      else process.env[key] = savedEnv[key];
+    }
+    process.exitCode = previousExitCode;
+  }
+  const statusLine = logs.find((line) => line.startsWith("{"));
+  if (!statusLine) {
+    throw new Error(`hr ui start did not report status: ${errors.join("; ") || "unknown error"}`);
+  }
+  return { status: JSON.parse(statusLine) as RuntimeUiStartStatus, errors };
+}
+
+function runtimePidFile(home: string, name: "ui" | "ui-https"): number | undefined {
+  try {
+    const pid = Number(fs.readFileSync(path.join(home, "pids", `${name}.pid`), "utf-8").trim());
+    return Number.isInteger(pid) && pid > 0 ? pid : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function runtimeStateFile(
+  home: string,
+  name: "ui" | "ui-https",
+): { pid?: number; explicitPublicUrl?: string } | undefined {
+  try {
+    return JSON.parse(fs.readFileSync(path.join(home, "pids", `${name}.json`), "utf-8")) as {
+      pid?: number;
+      explicitPublicUrl?: string;
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+function runtimePids(home: string): { https?: number; http?: number } {
+  return { https: runtimePidFile(home, "ui-https"), http: runtimePidFile(home, "ui") };
+}
+
+function pidAlive(pid: number | undefined): boolean {
+  if (pid === undefined) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function waitForRuntimePidExit(pid: number | undefined, timeoutMs = 10_000): Promise<void> {
+  if (pid === undefined) return;
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (!pidAlive(pid)) return;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error(`Agent UI pid ${pid} did not exit within ${timeoutMs}ms`);
+}
+
+function mutationRequest(options: {
+  protocol: "http" | "https";
+  port: number;
+  method?: string;
+  path?: string;
+  headers?: Record<string, string>;
+}): Promise<{ status: number }> {
+  return new Promise((resolve, reject) => {
+    const request = options.protocol === "https" ? https.request : http.request;
+    const req = request({
+      hostname: "127.0.0.1",
+      port: options.port,
+      method: options.method ?? "POST",
+      path: options.path ?? "/api/runs",
+      headers: options.headers,
+      rejectUnauthorized: false,
+    }, (res) => {
+      res.resume();
+      res.on("end", () => resolve({ status: res.statusCode ?? 0 }));
+    });
+    req.setTimeout(10_000, () => req.destroy(new Error("mutation request timed out")));
+    req.on("error", reject);
+    req.end();
+  });
 }
