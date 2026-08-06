@@ -1,119 +1,172 @@
 import { describe, expect, it } from 'vitest'
 
-import cockpitSource from './AgentVoiceCockpit.vue?raw'
+import {
+  AsrSocketGenerationFence,
+  AsrTranscriptionAttemptRegistry,
+  beginAsrRealtimeUtterance,
+  recoverAsrRealtimeSession,
+  type AsrControlSocket
+} from './asr-realtime-lifecycle'
+import {
+  ASR_UTTERANCE_SUPERSEDED_MESSAGE,
+  AsrTranscriptionDeadlineController,
+  type AsrDeadlineScheduler
+} from './asr-transcription-deadline'
 
-function sourceBetween(source: string, start: string, end: string): string {
-  const startIndex = source.indexOf(start)
-  const endIndex = source.indexOf(end, startIndex + start.length)
-  if (startIndex < 0 || endIndex < 0 || endIndex <= startIndex) {
-    throw new Error(`Could not find ordered lifecycle anchors: ${start} -> ${end}`)
+class FakeDeadlineScheduler implements AsrDeadlineScheduler {
+  private nextHandle = 1
+
+  now(): number {
+    return 0
   }
-  return source.slice(startIndex, endIndex)
+
+  setTimeout(): number {
+    return this.nextHandle++
+  }
+
+  clearTimeout(): void {}
 }
 
-describe('AgentVoiceCockpit ASR session lifecycle', () => {
-  it('starts each utterance with a protocol reset for emulated sessions', () => {
-    const beginUtterance = sourceBetween(
-      cockpitSource,
-      'function beginAsrUtterance(): void',
-      'function sendAsrAudio('
-    )
-    const nativeCapture = sourceBetween(
-      cockpitSource,
-      'function handleNativeVoiceSamples(',
-      'function updateNativeVoiceWaveform('
-    )
-    const browserCapture = sourceBetween(
-      cockpitSource,
-      'function updateVoiceWaveform(',
-      'async function finishUtterance('
-    )
+class FakeAsrSocket implements AsrControlSocket {
+  readonly sent: string[] = []
 
-    expect(beginUtterance).toContain('asrDeadlineController.beginUtterance()')
-    expect(beginUtterance).toContain(
-      'isBatchAsrStrategy(asrDeadlineController.getSessionStrategy())'
-    )
-    expect(beginUtterance).toContain("asrSocket.send(JSON.stringify({ type: 'start' }))")
-    expect(nativeCapture).toContain(
-      "if (recognitionMode.value === 'asr') beginAsrUtterance()"
-    )
-    expect(browserCapture).toContain(
-      "if (recognitionMode.value === 'asr') beginAsrUtterance()"
-    )
+  constructor(readonly readyState: number) {}
+
+  send(data: string): void {
+    this.sent.push(data)
+  }
+}
+
+describe('Agent Voice Cockpit ASR lifecycle helpers', () => {
+  it('clears the prior utterance error and sends start only for an open batch session', () => {
+    const controller = new AsrTranscriptionDeadlineController({
+      scheduler: new FakeDeadlineScheduler()
+    })
+    const socket = new FakeAsrSocket(1)
+    let error = 'No transcript'
+
+    beginAsrRealtimeUtterance({
+      controller,
+      socket,
+      openReadyState: 1,
+      onBegin: () => {
+        error = ''
+      }
+    })
+    expect(error).toBe('')
+    expect(socket.sent).toEqual([])
+
+    controller.handleSessionReady('emulated_batch')
+    beginAsrRealtimeUtterance({ controller, socket, openReadyState: 1, onBegin: () => {} })
+    expect(socket.sent).toEqual([JSON.stringify({ type: 'start' })])
+
+    const closedSocket = new FakeAsrSocket(3)
+    beginAsrRealtimeUtterance({
+      controller,
+      socket: closedSocket,
+      openReadyState: 1,
+      onBegin: () => {}
+    })
+    expect(closedSocket.sent).toEqual([])
   })
 
-  it('drops events from sockets invalidated by timeout recovery or disconnect', () => {
-    const connect = sourceBetween(
-      cockpitSource,
-      'async function connectAsrRealtime(): Promise<void>',
-      'function disconnectAsrRealtime(): void'
-    )
+  it('invalidates events from earlier socket generations', () => {
+    const fence = new AsrSocketGenerationFence()
+    const firstGeneration = fence.current()
+    expect(fence.isCurrent(firstGeneration)).toBe(true)
 
-    expect(connect).toContain('const socketGeneration = asrSocketGeneration')
-    expect(connect).toContain(
-      'if (socketGeneration !== asrSocketGeneration || asrSocket !== socket) return'
-    )
-    expect(connect).toContain('asrDeadlineController.resetSession(disconnectError)')
+    fence.invalidate()
+    expect(fence.isCurrent(firstGeneration)).toBe(false)
+    expect(fence.isCurrent(fence.current())).toBe(true)
   })
 
-  it('reconnects after a failed transcription before accepting another utterance', () => {
-    const finish = sourceBetween(
-      cockpitSource,
-      'async function finishUtterance(): Promise<void>',
-      'async function connectAsrRealtime(): Promise<void>'
-    )
-    const recover = sourceBetween(
-      cockpitSource,
-      'async function recoverAsrRealtimeAfterFailure(token: number): Promise<void>',
-      'function beginAsrUtterance(): void'
-    )
+  it('keeps a newer transcription registered when an older attempt settles', async () => {
+    const controller = new AsrTranscriptionDeadlineController({
+      scheduler: new FakeDeadlineScheduler()
+    })
+    const registry = new AsrTranscriptionAttemptRegistry()
+    const firstAttempt = controller.finish()
+    const firstPromise = registry.track(firstAttempt)
+    const secondAttempt = controller.finish()
+    const secondPromise = registry.track(secondAttempt)
 
-    expect(finish).toContain('await recoverAsrRealtimeAfterFailure(token)')
-    expect(recover).toContain('await connectAsrRealtime()')
-    expect(recover).toContain('closeVoiceInputAfterSubmit()')
+    await expect(firstPromise).rejects.toThrow(ASR_UTTERANCE_SUPERSEDED_MESSAGE)
+    expect(registry.hasPending()).toBe(true)
+
+    firstAttempt.resolve('stale transcript')
+    registry.resolve('current transcript')
+    await expect(secondPromise).resolves.toBe('current transcript')
+    expect(registry.hasPending()).toBe(false)
   })
 
-  it('keeps a healthy ASR socket when a completed transcription is empty', () => {
-    const finish = sourceBetween(
-      cockpitSource,
-      'async function finishUtterance(): Promise<void>',
-      'async function connectAsrRealtime(): Promise<void>'
-    )
-    const asrBranch = sourceBetween(
-      finish,
-      "if (recognitionMode.value === 'asr') {",
-      '\n  const chunks = pcmChunks'
-    )
-    const emptyTranscriptBranch = sourceBetween(
-      asrBranch,
-      'if (!text) {',
-      '\n      liveTranscript.value = text'
-    )
-    const failureCatch = sourceBetween(asrBranch, '} catch (err: any) {', '} finally {')
+  it('clears a stale error after reconnecting the active voice session', async () => {
+    let active = true
+    let error = 'ASR disconnected'
+    let disconnected = 0
+    let closed = 0
 
-    expect(emptyTranscriptBranch).toContain("error.value = t('voice.errors.noTranscript')")
-    expect(emptyTranscriptBranch).toContain('return')
-    expect(emptyTranscriptBranch).not.toContain('recoverAsrRealtimeAfterFailure')
-    expect(failureCatch).toContain('await recoverAsrRealtimeAfterFailure(token)')
+    await recoverAsrRealtimeSession({
+      shouldContinue: () => active,
+      connect: async () => {},
+      disconnect: () => {
+        disconnected += 1
+      },
+      clearError: () => {
+        error = ''
+      },
+      reportError: reconnectError => {
+        error = String(reconnectError)
+      },
+      closeInput: () => {
+        closed += 1
+      }
+    })
+
+    expect(error).toBe('')
+    expect(disconnected).toBe(0)
+    expect(closed).toBe(0)
+
+    active = true
+    await recoverAsrRealtimeSession({
+      shouldContinue: () => active,
+      connect: async () => {
+        active = false
+      },
+      disconnect: () => {
+        disconnected += 1
+      },
+      clearError: () => {
+        error = ''
+      },
+      reportError: () => {},
+      closeInput: () => {
+        closed += 1
+      }
+    })
+    expect(disconnected).toBe(1)
+    expect(closed).toBe(0)
   })
 
-  it('routes terminal events through the utterance-scoped transcription attempt', () => {
-    const finish = sourceBetween(
-      cockpitSource,
-      'function finishAsrUtterance(): Promise<string>',
-      'function handleAsrRealtimeMessage('
-    )
-    const settle = sourceBetween(
-      cockpitSource,
-      'function resolveAsrFinal(text: string): void',
-      'function cleanAsrTranscript('
-    )
+  it('reports a reconnect failure and closes only the still-active input', async () => {
+    let error: unknown = null
+    let closed = 0
 
-    expect(finish).toContain('asrPendingTranscription = transcription')
-    expect(finish).toContain('asrPendingTranscription === transcription')
-    expect(settle).toContain('asrPendingTranscription?.resolve(text)')
-    expect(settle).toContain('asrPendingTranscription?.reject(error)')
-    expect(settle).not.toContain('asrDeadlineController.resolve(')
-    expect(settle).not.toContain('asrDeadlineController.reject(')
+    await recoverAsrRealtimeSession({
+      shouldContinue: () => true,
+      connect: async () => {
+        throw new Error('reconnect failed')
+      },
+      disconnect: () => {},
+      clearError: () => {},
+      reportError: reconnectError => {
+        error = reconnectError
+      },
+      closeInput: () => {
+        closed += 1
+      }
+    })
+
+    expect(error).toEqual(new Error('reconnect failed'))
+    expect(closed).toBe(1)
   })
 })
