@@ -38,7 +38,7 @@ class FakeAsrSocket implements AsrControlSocket {
 }
 
 describe('Agent Voice Cockpit ASR lifecycle helpers', () => {
-  it('clears the prior utterance error and sends start only for an open batch session', () => {
+  it('clears the prior utterance error and sends start only for an open session', () => {
     const controller = new AsrTranscriptionDeadlineController({
       scheduler: new FakeDeadlineScheduler()
     })
@@ -61,13 +61,27 @@ describe('Agent Voice Cockpit ASR lifecycle helpers', () => {
     expect(socket.sent).toEqual([JSON.stringify({ type: 'start' })])
 
     const closedSocket = new FakeAsrSocket(3)
+    error = 'ASR disconnected'
     beginAsrRealtimeUtterance({
       controller,
       socket: closedSocket,
       openReadyState: 1,
-      onBegin: () => {}
+      onBegin: () => {
+        error = ''
+      }
     })
+    expect(error).toBe('ASR disconnected')
     expect(closedSocket.sent).toEqual([])
+
+    beginAsrRealtimeUtterance({
+      controller,
+      socket: null,
+      openReadyState: 1,
+      onBegin: () => {
+        error = ''
+      }
+    })
+    expect(error).toBe('ASR disconnected')
   })
 
   it('invalidates events from earlier socket generations', () => {

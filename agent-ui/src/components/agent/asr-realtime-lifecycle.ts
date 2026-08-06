@@ -23,10 +23,10 @@ export function beginAsrRealtimeUtterance({
   openReadyState,
   onBegin
 }: BeginAsrRealtimeUtteranceOptions): void {
-  onBegin()
   controller.beginUtterance()
-  if (!isBatchAsrStrategy(controller.getSessionStrategy())) return
   if (!socket || socket.readyState !== openReadyState) return
+  onBegin()
+  if (!isBatchAsrStrategy(controller.getSessionStrategy())) return
   socket.send(JSON.stringify({ type: 'start' }))
 }
 
