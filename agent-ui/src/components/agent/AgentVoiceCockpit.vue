@@ -4787,7 +4787,11 @@ async function finishUtterance(): Promise<void> {
     try {
       const text = (await finishAsrUtterance()).trim()
       if (token !== voiceSessionToken) return
-      if (!text) throw new Error(t('voice.errors.noTranscript'))
+      if (!text) {
+        error.value = t('voice.errors.noTranscript')
+        liveTranscript.value = ''
+        return
+      }
       liveTranscript.value = text
       voiceBusy.value = false
       await handleFinalTranscript(text)
