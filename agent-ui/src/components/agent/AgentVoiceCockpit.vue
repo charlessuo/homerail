@@ -63,7 +63,8 @@ import {
 } from '@/components/agent/codex-model-selection'
 import {
   ASR_CONNECTION_TIMEOUT_MS,
-  AsrTranscriptionDeadlineController
+  AsrTranscriptionDeadlineController,
+  isBatchAsrStrategy
 } from '@/components/agent/asr-transcription-deadline'
 import { voiceWs } from '@/api/clients/events-ws'
 import { useOnboardingStatus } from '@/composables/useOnboardingStatus'
@@ -428,9 +429,9 @@ let immersiveExitTimer = 0
 let immersiveReturnTimer = 0
 let nativeGamepadAnalogAt = 0
 let asrSocket: WebSocket | null = null
+let asrSocketGeneration = 0
 let asrTranscriptRaw = ''
 const asrDeadlineController = new AsrTranscriptionDeadlineController()
-let asrClosing = false
 let lastSubmittedVoiceTranscriptKey = ''
 let lastSubmittedVoiceTranscriptAt = 0
 let managerStatusTimer = 0
@@ -4653,7 +4654,7 @@ function handleNativeVoiceSamples(samples: Float32Array, sampleRate: number): vo
       liveTranscript.value = ''
       spokenText.value = ''
       asrTranscriptRaw = ''
-      asrDeadlineController.beginUtterance()
+      if (recognitionMode.value === 'asr') beginAsrUtterance()
       liveTranscript.value = t('voice.state.listening')
     }
   }
@@ -4767,7 +4768,7 @@ function updateVoiceWaveform(now: number): void {
       liveTranscript.value = ''
       spokenText.value = ''
       asrTranscriptRaw = ''
-      asrDeadlineController.beginUtterance()
+      if (recognitionMode.value === 'asr') beginAsrUtterance()
       liveTranscript.value = t('voice.state.listening')
     }
   } else if (speechActive && now - lastVoiceAt > voiceVadSilenceMs.value) {
@@ -4794,6 +4795,7 @@ async function finishUtterance(): Promise<void> {
       if (token !== voiceSessionToken) return
       error.value = err?.message || t('voice.errors.asrFailed')
       liveTranscript.value = ''
+      await recoverAsrRealtimeAfterFailure(token)
     } finally {
       if (token === voiceSessionToken) voiceBusy.value = false
     }
@@ -4843,8 +4845,8 @@ async function finishUtterance(): Promise<void> {
 
 async function connectAsrRealtime(): Promise<void> {
   disconnectAsrRealtime()
+  const socketGeneration = asrSocketGeneration
   await new Promise<void>((resolve, reject) => {
-    asrClosing = false
     const socket = createAsrRealtimeSocket()
     const timer = window.setTimeout(() => {
       socket.close()
@@ -4853,6 +4855,11 @@ async function connectAsrRealtime(): Promise<void> {
     socket.binaryType = 'arraybuffer'
     socket.onopen = () => {
       window.clearTimeout(timer)
+      if (socketGeneration !== asrSocketGeneration) {
+        socket.close()
+        reject(new Error(t('voice.errors.asrDisconnected')))
+        return
+      }
       asrSocket = socket
       resolve()
     }
@@ -4861,22 +4868,47 @@ async function connectAsrRealtime(): Promise<void> {
       reject(new Error(t('voice.errors.asrConnectionFailed')))
     }
     socket.onclose = () => {
+      if (socketGeneration !== asrSocketGeneration) return
       const wasActiveSocket = asrSocket === socket
       if (wasActiveSocket) asrSocket = null
-      if (wasActiveSocket && !asrClosing && listening.value) {
-        rejectAsrFinal(new Error(t('voice.errors.asrDisconnected')))
-        error.value = t('voice.errors.asrDisconnected')
+      if (wasActiveSocket && listening.value) {
+        const disconnectError = new Error(t('voice.errors.asrDisconnected'))
+        asrTranscriptRaw = ''
+        asrDeadlineController.resetSession(disconnectError)
+        error.value = disconnectError.message
       }
     }
-    socket.onmessage = event => handleAsrRealtimeMessage(event.data)
+    socket.onmessage = event => {
+      if (socketGeneration !== asrSocketGeneration || asrSocket !== socket) return
+      handleAsrRealtimeMessage(event.data)
+    }
   })
 }
 
 function disconnectAsrRealtime(): void {
-  asrClosing = true
+  asrSocketGeneration += 1
   asrDeadlineController.resetSession(new Error(t('voice.errors.asrDisconnected')))
   if (asrSocket) asrSocket.close()
   asrSocket = null
+}
+
+async function recoverAsrRealtimeAfterFailure(token: number): Promise<void> {
+  if (token !== voiceSessionToken || !listening.value || recognitionMode.value !== 'asr') return
+  try {
+    await connectAsrRealtime()
+    if (token !== voiceSessionToken) disconnectAsrRealtime()
+  } catch (reconnectError: any) {
+    if (token !== voiceSessionToken) return
+    error.value = reconnectError?.message || t('voice.errors.asrConnectionFailed')
+    closeVoiceInputAfterSubmit()
+  }
+}
+
+function beginAsrUtterance(): void {
+  asrDeadlineController.beginUtterance()
+  if (!isBatchAsrStrategy(asrDeadlineController.getSessionStrategy())) return
+  if (!asrSocket || asrSocket.readyState !== WebSocket.OPEN) return
+  asrSocket.send(JSON.stringify({ type: 'start' }))
 }
 
 function sendAsrAudio(samples: Float32Array, sampleRate: number): void {

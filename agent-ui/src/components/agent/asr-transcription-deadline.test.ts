@@ -466,6 +466,21 @@ describe('AsrTranscriptionDeadlineController terminal paths', () => {
     expect(rejectedMessage(outcome())).toBe(ASR_SESSION_DISCONNECTED_MESSAGE)
     expect(scheduler.activeTimerCount).toBe(0)
   })
+
+  it('clears strategy and captured audio when the socket closes before finish', () => {
+    const scheduler = new FakeDeadlineScheduler()
+    const controller = new AsrTranscriptionDeadlineController({ scheduler })
+    controller.handleSessionReady('emulated_batch')
+    controller.beginUtterance()
+    controller.recordSentAudio(32000, 16000)
+
+    controller.resetSession(new Error('socket closed'))
+
+    expect(controller.getSessionStrategy()).toBeNull()
+    expect(controller.getCapturedAudioMs()).toBe(0)
+    expect(controller.hasPendingUtterance()).toBe(false)
+    expect(scheduler.activeTimerCount).toBe(0)
+  })
 })
 
 describe('AsrTranscriptionDeadlineController per-utterance isolation', () => {
