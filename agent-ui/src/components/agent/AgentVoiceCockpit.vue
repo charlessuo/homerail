@@ -61,6 +61,10 @@ import {
   resolveCodexServiceTierForModel,
   resolveCodexServiceTierOptions
 } from '@/components/agent/codex-model-selection'
+import {
+  ASR_CONNECTION_TIMEOUT_MS,
+  AsrTranscriptionDeadlineController
+} from '@/components/agent/asr-transcription-deadline'
 import { voiceWs } from '@/api/clients/events-ws'
 import { useOnboardingStatus } from '@/composables/useOnboardingStatus'
 import {
@@ -425,9 +429,7 @@ let immersiveReturnTimer = 0
 let nativeGamepadAnalogAt = 0
 let asrSocket: WebSocket | null = null
 let asrTranscriptRaw = ''
-let asrFinalResolve: ((text: string) => void) | null = null
-let asrFinalReject: ((error: Error) => void) | null = null
-let asrFinalTimer = 0
+const asrDeadlineController = new AsrTranscriptionDeadlineController()
 let asrClosing = false
 let lastSubmittedVoiceTranscriptKey = ''
 let lastSubmittedVoiceTranscriptAt = 0
@@ -4651,6 +4653,7 @@ function handleNativeVoiceSamples(samples: Float32Array, sampleRate: number): vo
       liveTranscript.value = ''
       spokenText.value = ''
       asrTranscriptRaw = ''
+      asrDeadlineController.beginUtterance()
       liveTranscript.value = t('voice.state.listening')
     }
   }
@@ -4764,6 +4767,7 @@ function updateVoiceWaveform(now: number): void {
       liveTranscript.value = ''
       spokenText.value = ''
       asrTranscriptRaw = ''
+      asrDeadlineController.beginUtterance()
       liveTranscript.value = t('voice.state.listening')
     }
   } else if (speechActive && now - lastVoiceAt > voiceVadSilenceMs.value) {
@@ -4845,7 +4849,7 @@ async function connectAsrRealtime(): Promise<void> {
     const timer = window.setTimeout(() => {
       socket.close()
       reject(new Error(t('voice.errors.asrTimeout')))
-    }, 5000)
+    }, ASR_CONNECTION_TIMEOUT_MS)
     socket.binaryType = 'arraybuffer'
     socket.onopen = () => {
       window.clearTimeout(timer)
@@ -4870,10 +4874,7 @@ async function connectAsrRealtime(): Promise<void> {
 
 function disconnectAsrRealtime(): void {
   asrClosing = true
-  if (asrFinalTimer) window.clearTimeout(asrFinalTimer)
-  asrFinalTimer = 0
-  asrFinalResolve = null
-  asrFinalReject = null
+  asrDeadlineController.resetSession(new Error(t('voice.errors.asrDisconnected')))
   if (asrSocket) asrSocket.close()
   asrSocket = null
 }
@@ -4884,19 +4885,20 @@ function sendAsrAudio(samples: Float32Array, sampleRate: number): void {
     return
   }
   const pcm = encodePcm16(samples, sampleRate, 16000)
-  if (pcm.byteLength) asrSocket.send(pcm)
+  if (!pcm.byteLength) return
+  asrSocket.send(pcm)
+  asrDeadlineController.recordSentAudio(samples.length, sampleRate)
 }
 
 function finishAsrUtterance(): Promise<string> {
   if (!asrSocket || asrSocket.readyState !== WebSocket.OPEN) {
     throw new Error(t('voice.errors.asrNotConnected'))
   }
-  return new Promise((resolve, reject) => {
-    asrFinalResolve = resolve
-    asrFinalReject = reject
-    asrFinalTimer = window.setTimeout(() => rejectAsrFinal(new Error(t('voice.errors.asrTranscriptionTimeout'))), 9000)
-    asrSocket?.send(JSON.stringify({ type: 'finish' }))
+  const transcription = asrDeadlineController.finish({
+    timeoutMessage: t('voice.errors.asrTranscriptionTimeout')
   })
+  asrSocket?.send(JSON.stringify({ type: 'finish' }))
+  return transcription
 }
 
 function handleAsrRealtimeMessage(payload: unknown): void {
@@ -4905,6 +4907,14 @@ function handleAsrRealtimeMessage(payload: unknown): void {
   try {
     event = JSON.parse(payload)
   } catch {
+    return
+  }
+  if (event.type === 'session.ready') {
+    asrDeadlineController.handleSessionReady(event.strategy)
+    return
+  }
+  if (event.type === 'transcription.processing') {
+    asrDeadlineController.handleTranscriptionProcessing(event.strategy)
     return
   }
   if (event.type === 'error') {
@@ -4933,23 +4943,13 @@ function handleAsrRealtimeMessage(payload: unknown): void {
 }
 
 function resolveAsrFinal(text: string): void {
-  if (asrFinalTimer) window.clearTimeout(asrFinalTimer)
-  asrFinalTimer = 0
-  const resolve = asrFinalResolve
-  asrFinalResolve = null
-  asrFinalReject = null
   asrTranscriptRaw = ''
-  resolve?.(text)
+  asrDeadlineController.resolve(text)
 }
 
 function rejectAsrFinal(error: Error): void {
-  if (asrFinalTimer) window.clearTimeout(asrFinalTimer)
-  asrFinalTimer = 0
-  const reject = asrFinalReject
-  asrFinalResolve = null
-  asrFinalReject = null
   asrTranscriptRaw = ''
-  reject?.(error)
+  asrDeadlineController.reject(error)
 }
 
 function cleanAsrTranscript(text: string): string {
