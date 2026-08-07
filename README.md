@@ -320,6 +320,16 @@ Remote Worker and Node connections require authenticated `wss://` endpoints;
 see [Control-Plane WebSocket Security](docs/control-plane-security.md) for token,
 reverse-proxy, certificate, and compatibility settings.
 
+Worker image builds default to the base image's Debian sources and the
+default npm registry. Operators in restricted networks can opt in to public
+mirrors with `HOMERAIL_WORKER_BUILD_APT_MIRROR`,
+`HOMERAIL_WORKER_BUILD_APT_SECURITY_MIRROR`, and
+`HOMERAIL_WORKER_BUILD_NPM_REGISTRY`; standard `HTTP_PROXY`/`HTTPS_PROXY`/
+`NO_PROXY` variables are forwarded to Docker by name only, and their values
+are never captured by HomeRail. See
+[Worker build network sources](docs/worker-build-network.md) for the
+validation contract, security boundaries, and fnOS integration notes.
+
 Runtime helpers:
 
 ```bash

@@ -23,6 +23,9 @@ test("routes live jobs to isolated runner slots and serializes only Manager port
   assert.doesNotMatch(review, /HOMERAIL_LIVE_SLOT|HOMERAIL_MANAGER_PORT/);
   assert.match(actionlint, /- homerail-pr-review/);
   assert.match(runner, /org\.homerail\.live_slot=\$LIVE_SLOT/);
+  assert.match(runner, /source "\$REPO_ROOT\/scripts\/lib\/worker-build-network\.sh"/);
+  assert.match(runner, /homerail_worker_build_network_args LIVE_BUILD_NETWORK_ARGS/);
+  assert.doesNotMatch(runner, /\beval\b/);
   assert.match(runner, /LIVE_RUN_LABEL="org\.homerail\.live_run_v2"/);
   assert.match(runner, /--label "\$LIVE_RUN_LABEL=\$RUN_KEY"/);
   assert.match(runner, /manager-port-allocation\.lock/);
@@ -212,4 +215,114 @@ esac
   removals = fs.readFileSync(dockerLog, "utf8").split("\n").filter((line) => /^(rm -f|image rm -f)/.test(line));
   assert.ok(removals.includes("rm -f container-b"));
   assert.ok(removals.includes("image rm -f image-b"));
+});
+
+
+test("live runner builds the worker image through the shared build network contract", { skip: process.platform !== "linux" }, (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "homerail-live-runner-build-network-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+
+  const runnerBase = path.join(root, "runner");
+  const homeRoot = path.join(root, "home");
+  const artifactRoot = path.join(root, "artifacts");
+  const fakeBin = path.join(root, "bin");
+  const fakeHome = path.join(root, "user-home");
+  const capturePath = path.join(root, "docker-build-args.txt");
+  fs.mkdirSync(fakeBin, { recursive: true });
+  fs.mkdirSync(fakeHome, { recursive: true });
+
+  const fakeCommand = (name, content) => {
+    fs.writeFileSync(path.join(fakeBin, name), content, { mode: 0o755 });
+  };
+
+  fakeCommand("docker", "#!/usr/bin/env bash\nif [ \"${1:-}\" = build ]; then printf '%s\\n' \"$@\" > \"$CAPTURE_DOCKER_BUILD_ARGS\"; fi\nexit 0\n");
+  fakeCommand("curl", "#!/usr/bin/env bash\nexit 0\n");
+  fakeCommand("python3", "#!/usr/bin/env bash\nexit 0\n");
+  fakeCommand("ss", "#!/usr/bin/env bash\nexit 0\n");
+  fakeCommand("node", "#!/usr/bin/env bash\nfor arg in \"$@\"; do\n  if [ \"$arg\" = start ]; then exit 3; fi\ndone\nexit 0\n");
+
+  const baseEnv = {
+    PATH: `${fakeBin}:${process.env.PATH ?? ""}`,
+    HOME: fakeHome,
+    GITHUB_RUN_ID: "contract",
+    GITHUB_RUN_ATTEMPT: "1",
+    HOMERAIL_RUNNER_BASE: runnerBase,
+    HOMERAIL_LIVE_HOME_BASE: homeRoot,
+    HOMERAIL_LIVE_ARTIFACTS: artifactRoot,
+    HOMERAIL_LIVE_REPORT_PATH: path.join(root, "report", "dag-patterns-live.json"),
+    HOMERAIL_LIVE_SLOT: "buildnet",
+    HOMERAIL_LIVE_PATTERNS: "handoff-contracts",
+    HOMERAIL_PATTERN_MODEL_BASE_URL: "http://model.contract.test",
+    HOMERAIL_DAG_APPROVAL_TOKEN: "contract-approval-token",
+    HOMERAIL_DAG_MUTATION_TOKEN: "contract-mutation-token",
+    HOMERAIL_MANAGER_ADMIN_TOKEN: "contract-admin-token",
+    HOMERAIL_WORKER_BUILD_APT_MIRROR: "",
+    HOMERAIL_WORKER_BUILD_APT_SECURITY_MIRROR: "",
+    HOMERAIL_WORKER_BUILD_NPM_REGISTRY: "",
+    HTTP_PROXY: "",
+    HTTPS_PROXY: "",
+    NO_PROXY: "",
+    http_proxy: "",
+    https_proxy: "",
+    no_proxy: "",
+  };
+
+  const runnerScript = path.join(repoRoot, "scripts", "run-dag-patterns-live-runner.sh");
+  const runRunner = (extraEnv = {}) => {
+    fs.rmSync(capturePath, { force: true });
+    return spawnSync("bash", [runnerScript], {
+      cwd: repoRoot,
+      encoding: "utf8",
+      env: { ...baseEnv, CAPTURE_DOCKER_BUILD_ARGS: capturePath, ...extraEnv },
+    });
+  };
+
+  // The fake Manager start exits 3 after the Worker image build, so a healthy
+  // run is observed through the captured Docker argv, not the exit status.
+  const baseline = runRunner();
+  assert.equal(baseline.status, 3, baseline.stderr);
+  assert.deepEqual(fs.readFileSync(capturePath, "utf8").trim().split("\n"), [
+    "build",
+    "--label",
+    "org.homerail.live_run_v2=contract-1",
+    "--label",
+    "org.homerail.live_slot=buildnet",
+    "-t",
+    "homerail-worker:dag-live-contract-1",
+    "-f",
+    path.join(repoRoot, "homerail_worker", "Dockerfile"),
+    repoRoot,
+  ]);
+
+  const custom = runRunner({
+    HOMERAIL_WORKER_BUILD_APT_MIRROR: "https://deb.live.example/debian/",
+    HOMERAIL_WORKER_BUILD_NPM_REGISTRY: "https://npm.live.example",
+  });
+  assert.equal(custom.status, 3, custom.stderr);
+  const customArgs = fs.readFileSync(capturePath, "utf8");
+  assert.match(customArgs, /--build-arg\nHOMERAIL_WORKER_BUILD_APT_MIRROR=https:\/\/deb\.live\.example\/debian\n/);
+  assert.match(customArgs, /--build-arg\nNPM_CONFIG_REGISTRY=https:\/\/npm\.live\.example\n/);
+  assert.doesNotMatch(customArgs, /HOMERAIL_WORKER_BUILD_APT_SECURITY_MIRROR/);
+
+  const proxy = runRunner({
+    HTTPS_PROXY: "http://proxy.live.example:3128",
+    no_proxy: "localhost",
+  });
+  assert.equal(proxy.status, 3, proxy.stderr);
+  const proxyArgs = fs.readFileSync(capturePath, "utf8");
+  const proxyArgLines = proxyArgs.split("\n");
+  const valuelessProxyArgs = [];
+  for (let index = 0; index < proxyArgLines.length - 1; index += 1) {
+    if (proxyArgLines[index] === "--build-arg" && !proxyArgLines[index + 1].includes("=")) {
+      valuelessProxyArgs.push(proxyArgLines[index + 1]);
+    }
+  }
+  assert.deepEqual(valuelessProxyArgs, ["HTTPS_PROXY", "no_proxy"]);
+  assert.doesNotMatch(proxyArgs, /proxy\.live\.example/);
+
+  const invalid = runRunner({ HOMERAIL_WORKER_BUILD_APT_MIRROR: "http://user:pass@deb.live.example" });
+  assert.equal(invalid.status, 1, invalid.stderr);
+  assert.match(invalid.stderr, /HOMERAIL_WORKER_BUILD_APT_MIRROR/);
+  assert.doesNotMatch(invalid.stderr, /user:pass/);
+  assert.equal(fs.existsSync(capturePath), false);
 });
