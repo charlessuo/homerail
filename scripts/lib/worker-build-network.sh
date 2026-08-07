@@ -10,11 +10,12 @@
 #   HOMERAIL_WORKER_BUILD_NPM_REGISTRY         optional npm registry URL
 #
 # Unset or whitespace-only values leave the corresponding source unchanged.
-# Valid values use http: or https:, have a hostname, and contain no username,
-# password, query, fragment, control characters, or raw whitespace. Trailing
-# slashes, scheme case, and host case are normalized so semantically identical
-# URLs produce identical build arguments. Invalid values fail before Docker
-# starts; the error names the configuration key but never its value.
+# Normalization and validation are delegated to the Worker WHATWG URL helper
+# at homerail_worker/scripts/configure-apt-sources.mjs: this script passes
+# only the environment variable name, so a source value never appears in
+# argv, captured commands, or logs. ${NODE_BIN:-node} selects the Node binary
+# used for that delegation. Invalid values fail before Docker starts; the
+# error names the configuration key but never its value.
 #
 # Recognized uppercase and lowercase HTTP_PROXY, HTTPS_PROXY, and NO_PROXY
 # variables are forwarded as value-less Docker --build-arg NAME entries only
@@ -24,102 +25,46 @@
 # The helper only appends to a caller-provided argv array. It never evaluates
 # or executes validated input. Callers must use `set -euo pipefail`.
 
-# homerail_worker_build_network_normalize_source NAME VALUE
+# homerail_worker_build_network_helper_path
 #
-# Prints the normalized URL for the public source setting NAME. Prints nothing
-# and returns 0 when VALUE is unset-equivalent (empty or whitespace-only).
-# Returns 1 with an error naming NAME (never VALUE) when VALUE is invalid.
+# Prints the absolute path of the Worker WHATWG URL helper, derived safely
+# from this file's own location so the repository-relative contract path
+# homerail_worker/scripts/configure-apt-sources.mjs resolves in any checkout,
+# staged release, or contract-test sandbox.
+homerail_worker_build_network_helper_path() {
+  local lib_dir repo_root
+  lib_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd -P)" || return 1
+  repo_root="$(cd -- "$lib_dir/../.." >/dev/null 2>&1 && pwd -P)" || return 1
+  printf '%s/homerail_worker/scripts/configure-apt-sources.mjs\n' "$repo_root"
+}
+
+# homerail_worker_build_network_normalize_source NAME
+#
+# Prints the normalized URL for the public source setting NAME. Only NAME
+# crosses the process boundary; the Worker helper reads the value from the
+# environment itself and prints the normalized public URL. Prints nothing and
+# returns 0 when the variable is unset-equivalent (empty or whitespace-only).
+# Returns 1 with an error naming NAME (never its value) when the value is
+# invalid, or when the Worker helper is unavailable.
 homerail_worker_build_network_normalize_source() {
-  local LC_ALL=C
   local name="$1"
-  local value="${2-}"
-  local error="$name must be a public http: or https: URL with a hostname and no credentials, query, fragment, control characters, or whitespace."
-
-  # Trim surrounding whitespace; whitespace-only values leave the source unchanged.
-  value="${value#"${value%%[![:space:]]*}"}"
-  value="${value%"${value##*[![:space:]]}"}"
-  if [ -z "$value" ]; then
-    return 0
-  fi
-
-  # Reject control characters and raw whitespace anywhere in the value.
-  if ! [[ "$value" =~ ^[[:print:]]+$ ]] || [[ "$value" == *" "* ]]; then
-    echo "$error" >&2
+  local helper_path
+  if ! helper_path="$(homerail_worker_build_network_helper_path)"; then
+    echo "$name cannot be validated: unable to resolve the repository root from scripts/lib/worker-build-network.sh." >&2
     return 1
   fi
-
-  local lower scheme rest
-  lower="${value,,}"
-  case "$lower" in
-    http://*) scheme="http"; rest="${value:7}" ;;
-    https://*) scheme="https"; rest="${value:8}" ;;
-    *)
-      echo "$error" >&2
-      return 1
-      ;;
-  esac
-
-  # Credentials, queries, and fragments are rejected outright.
-  case "$rest" in
-    *"@"* | *"?"* | *"#"*)
-      echo "$error" >&2
-      return 1
-      ;;
-  esac
-
-  local authority url_path
-  if [[ "$rest" == */* ]]; then
-    authority="${rest%%/*}"
-    url_path="/${rest#*/}"
-  else
-    authority="$rest"
-    url_path=""
-  fi
-  if [ -z "$authority" ]; then
-    echo "$error" >&2
+  if [ ! -f "$helper_path" ]; then
+    echo "$name cannot be validated: homerail_worker/scripts/configure-apt-sources.mjs is missing." >&2
     return 1
   fi
-
-  local host port_part=""
-  if [[ "$authority" == "["* ]]; then
-    if [[ ! "$authority" =~ ^\[([0-9A-Fa-f:]+)\](:[0-9]+)?$ ]] || [[ "${BASH_REMATCH[1]}" != *::* ]]; then
-      echo "$error" >&2
-      return 1
-    fi
-    host="[${BASH_REMATCH[1],,}]"
-    port_part="${BASH_REMATCH[2]}"
-  else
-    if [[ "$authority" == *:* ]]; then
-      host="${authority%%:*}"
-      port_part=":${authority#*:}"
-    else
-      host="$authority"
-    fi
-    if [[ ! "$host" =~ ^[A-Za-z0-9._~-]+$ ]]; then
-      echo "$error" >&2
-      return 1
-    fi
-    host="${host,,}"
-  fi
-  if [ -n "$port_part" ] && [[ ! "$port_part" =~ ^:[0-9]{1,5}$ ]]; then
-    echo "$error" >&2
+  local normalized
+  if ! normalized="$("${NODE_BIN:-node}" "$helper_path" --print-env "$name")"; then
     return 1
   fi
-
-  # Paths keep only unreserved/sub-delimiter URL characters; anything else
-  # fails closed instead of reaching Docker argv.
-  local path_pattern="^/[A-Za-z0-9._~:/!$&'()*+,;=%-]*$"
-  if [ -n "$url_path" ] && ! [[ "$url_path" =~ $path_pattern ]]; then
-    echo "$error" >&2
-    return 1
+  if [ -n "$normalized" ]; then
+    printf '%s\n' "$normalized"
   fi
-
-  # Normalize harmless trailing-slash differences.
-  while [[ "$url_path" == */ ]]; do
-    url_path="${url_path%/}"
-  done
-
-  printf '%s://%s%s%s\n' "$scheme" "$host" "$port_part" "$url_path"
+  return 0
 }
 
 # homerail_worker_build_network_args ARRAY_NAME
@@ -136,7 +81,7 @@ homerail_worker_build_network_args() {
   local -n _homerail_worker_build_network_args="$1"
   local name normalized proxy_name
   for name in HOMERAIL_WORKER_BUILD_APT_MIRROR HOMERAIL_WORKER_BUILD_APT_SECURITY_MIRROR HOMERAIL_WORKER_BUILD_NPM_REGISTRY; do
-    if ! normalized="$(homerail_worker_build_network_normalize_source "$name" "${!name-}")"; then
+    if ! normalized="$(homerail_worker_build_network_normalize_source "$name")"; then
       return 1
     fi
     if [ -n "$normalized" ]; then

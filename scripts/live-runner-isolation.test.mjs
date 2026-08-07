@@ -231,6 +231,24 @@ test("live runner builds the worker image through the shared build network contr
   fs.mkdirSync(fakeBin, { recursive: true });
   fs.mkdirSync(fakeHome, { recursive: true });
 
+  // The sandbox stages a partial repository. Every sandbox that sources or
+  // executes scripts/lib/worker-build-network.sh must also copy the delegated
+  // Worker helper to its exact repository-relative path, or the shared
+  // contract must fail closed instead of silently keeping unknown sources.
+  const sourceRoot = path.join(root, "repo");
+  for (const relative of [
+    "scripts/run-dag-patterns-live-runner.sh",
+    "scripts/cleanup-dag-patterns-live-runner.sh",
+    "scripts/lib/worker-build-network.sh",
+    "homerail_worker/scripts/configure-apt-sources.mjs",
+    "homerail_worker/Dockerfile",
+  ]) {
+    const target = path.join(sourceRoot, relative);
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.copyFileSync(path.join(repoRoot, relative), target);
+    fs.chmodSync(target, 0o755);
+  }
+
   const fakeCommand = (name, content) => {
     fs.writeFileSync(path.join(fakeBin, name), content, { mode: 0o755 });
   };
@@ -241,9 +259,26 @@ test("live runner builds the worker image through the shared build network contr
   fakeCommand("ss", "#!/usr/bin/env bash\nexit 0\n");
   fakeCommand("node", "#!/usr/bin/env bash\nfor arg in \"$@\"; do\n  if [ \"$arg\" = start ]; then exit 3; fi\ndone\nexit 0\n");
 
+  // The shared helper delegates URL validation to ${NODE_BIN:-node}. The shim
+  // captures the exact argv handed to Node before delegating to the real
+  // binary: only environment variable names may cross the boundary, never
+  // source or proxy values.
+  const argvLog = path.join(root, "node-argv.txt");
+  const nodeShim = path.join(root, "node-shim.sh");
+  fs.writeFileSync(
+    nodeShim,
+    `#!/usr/bin/env bash
+printf '%s\\n' "$@" >> "$ARGV_LOG"
+exec "${process.execPath}" "$@"
+`,
+    { mode: 0o755 },
+  );
+
   const baseEnv = {
     PATH: `${fakeBin}:${process.env.PATH ?? ""}`,
     HOME: fakeHome,
+    NODE_BIN: nodeShim,
+    ARGV_LOG: argvLog,
     GITHUB_RUN_ID: "contract",
     GITHUB_RUN_ATTEMPT: "1",
     HOMERAIL_RUNNER_BASE: runnerBase,
@@ -267,11 +302,11 @@ test("live runner builds the worker image through the shared build network contr
     no_proxy: "",
   };
 
-  const runnerScript = path.join(repoRoot, "scripts", "run-dag-patterns-live-runner.sh");
+  const runnerScript = path.join(sourceRoot, "scripts", "run-dag-patterns-live-runner.sh");
   const runRunner = (extraEnv = {}) => {
     fs.rmSync(capturePath, { force: true });
     return spawnSync("bash", [runnerScript], {
-      cwd: repoRoot,
+      cwd: sourceRoot,
       encoding: "utf8",
       env: { ...baseEnv, CAPTURE_DOCKER_BUILD_ARGS: capturePath, ...extraEnv },
     });
@@ -290,8 +325,8 @@ test("live runner builds the worker image through the shared build network contr
     "-t",
     "homerail-worker:dag-live-contract-1",
     "-f",
-    path.join(repoRoot, "homerail_worker", "Dockerfile"),
-    repoRoot,
+    path.join(sourceRoot, "homerail_worker", "Dockerfile"),
+    sourceRoot,
   ]);
 
   const custom = runRunner({
@@ -319,6 +354,25 @@ test("live runner builds the worker image through the shared build network contr
   }
   assert.deepEqual(valuelessProxyArgs, ["HTTPS_PROXY", "no_proxy"]);
   assert.doesNotMatch(proxyArgs, /proxy\.live\.example/);
+
+  const capturedArgv = fs.readFileSync(argvLog, "utf8");
+  assert.match(capturedArgv, /--print-env/);
+  assert.match(capturedArgv, /configure-apt-sources\.mjs/);
+  for (const expected of [
+    "HOMERAIL_WORKER_BUILD_APT_MIRROR",
+    "HOMERAIL_WORKER_BUILD_APT_SECURITY_MIRROR",
+    "HOMERAIL_WORKER_BUILD_NPM_REGISTRY",
+  ]) {
+    assert.ok(capturedArgv.includes(expected), `delegation must name ${expected} only`);
+  }
+  for (const prohibited of [
+    "https://deb.live.example/debian/",
+    "https://npm.live.example",
+    "http://proxy.live.example:3128",
+    "http://user:pass@deb.live.example",
+  ]) {
+    assert.ok(!capturedArgv.includes(prohibited), "source and proxy values must never reach argv");
+  }
 
   const invalid = runRunner({ HOMERAIL_WORKER_BUILD_APT_MIRROR: "http://user:pass@deb.live.example" });
   assert.equal(invalid.status, 1, invalid.stderr);

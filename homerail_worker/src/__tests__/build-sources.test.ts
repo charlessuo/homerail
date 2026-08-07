@@ -26,8 +26,13 @@ interface BuildSourcesHelperModule {
   DEFAULT_DEB822_SOURCES_PATH: string;
   APT_MAIN_MIRROR_ENV: string;
   APT_SECURITY_MIRROR_ENV: string;
+  PRINT_ENV_FLAG: string;
   normalizeMirrorValue: (rawValue: unknown) => string | undefined;
   validateMirrorUrl: (rawValue: string, key: string) => string;
+  normalizedEnvSource: (
+    name: string,
+    env: Record<string, string | undefined>,
+  ) => string | undefined;
   applyDeb822SourceOverrides: (
     content: string,
     overrides?: { mainMirror?: string; securityMirror?: string },
@@ -38,6 +43,7 @@ interface BuildSourcesHelperModule {
     readFile?: (sourcesPath: string) => string;
     writeFile?: (sourcesPath: string, output: string) => void;
     fail?: (message: string) => void;
+    print?: (line: string) => void;
   }) => number;
 }
 
@@ -51,6 +57,29 @@ const DEBIAN_SOURCES_FIXTURE = [
   "Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg",
   "",
   "Types: deb",
+  "URIs: http://deb.debian.org/debian-security",
+  "Suites: bookworm-security",
+  "Components: main",
+  "Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg",
+  "",
+].join("\n");
+
+// Exact /etc/apt/sources.list.d/debian.sources snapshot shipped with the
+// node:22-slim base image: the snapshot comments live inside active stanzas,
+// so only blank lines may delimit stanzas and the comments must survive
+// replacement byte for byte.
+const NODE_SLIM_SNAPSHOT_MAIN_COMMENT = "# http://snapshot.debian.org/archive/debian/20260803T000000Z";
+const NODE_SLIM_SNAPSHOT_SECURITY_COMMENT = "# http://snapshot.debian.org/archive/debian-security/20260803T000000Z";
+const NODE_SLIM_DEB822_FIXTURE = [
+  "Types: deb",
+  NODE_SLIM_SNAPSHOT_MAIN_COMMENT,
+  "URIs: http://deb.debian.org/debian",
+  "Suites: bookworm bookworm-updates",
+  "Components: main",
+  "Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg",
+  "",
+  "Types: deb",
+  NODE_SLIM_SNAPSHOT_SECURITY_COMMENT,
   "URIs: http://deb.debian.org/debian-security",
   "Suites: bookworm-security",
   "Components: main",
@@ -163,6 +192,48 @@ describe("Worker deb822 source override helper", () => {
       .toBe("https://mirror.example.com/debian");
   });
 
+  it("normalizes default ports, scheme/host case, and bracketed IPv6 consistently", () => {
+    expect(helper.validateMirrorUrl("http://mirror.example.com:80/debian", helper.APT_MAIN_MIRROR_ENV))
+      .toBe("http://mirror.example.com/debian");
+    expect(helper.validateMirrorUrl("https://mirror.example.com:443/", helper.APT_MAIN_MIRROR_ENV))
+      .toBe("https://mirror.example.com");
+    expect(helper.validateMirrorUrl("HTTP://MIRROR.EXAMPLE.COM/debian", helper.APT_MAIN_MIRROR_ENV))
+      .toBe("http://mirror.example.com/debian");
+    expect(helper.validateMirrorUrl("http://[2001:DB8::1]:8080/debian", helper.APT_MAIN_MIRROR_ENV))
+      .toBe("http://[2001:db8::1]:8080/debian");
+    expect(helper.validateMirrorUrl("https://[2001:db8::1]/debian", helper.APT_SECURITY_MIRROR_ENV))
+      .toBe("https://[2001:db8::1]/debian");
+  });
+
+  it("rejects port 99999 and every prohibited URL form naming the key but never the value", () => {
+    const prohibited = [
+      "http://mirror.example.com:99999/debian",
+      "https://mirror.example.com:port/debian",
+      "https://user:password@mirror.example.com/debian",
+      "https://mirror.example.com/debian?suite=stable",
+      "https://mirror.example.com/debian#fragment",
+      "https://mirror.example.com/deb ian",
+      "https://mirror.example.com/debian\u0000",
+      "https://mirror.example.com/<script>",
+      "https://ex\u00e4mple.example.com/debian",
+      "ftp://mirror.example.com/debian",
+      "file:///etc/passwd",
+      "not a url",
+    ];
+    for (const value of prohibited) {
+      let caught: unknown;
+      try {
+        helper.validateMirrorUrl(value, helper.APT_SECURITY_MIRROR_ENV);
+      } catch (error) {
+        caught = error;
+      }
+      expect(caught).toBeInstanceOf(Error);
+      const message = (caught as Error).message;
+      expect(message).toContain(helper.APT_SECURITY_MIRROR_ENV);
+      expect(message).not.toContain(value);
+    }
+  });
+
   it("preserves unrelated deb822 fields and stanza structure", () => {
     const result = helper.applyDeb822SourceOverrides(DEBIAN_SOURCES_FIXTURE, {
       mainMirror: "https://mirror.example.com/debian",
@@ -182,6 +253,92 @@ describe("Worker deb822 source override helper", () => {
       securityMirror: "https://mirror.example.com/debian-security",
     });
     expect(securityOnly.output).toContain("URIs: http://deb.debian.org/debian\n");
+  });
+
+  it("replaces the node:22-slim main stanza without touching the security stanza or its snapshot comment", () => {
+    const result = helper.applyDeb822SourceOverrides(NODE_SLIM_DEB822_FIXTURE, {
+      mainMirror: "https://mirror.example.com/debian",
+    });
+    expect(result.changed).toBe(true);
+    expect(result.output).toBe(NODE_SLIM_DEB822_FIXTURE.replace(
+      "URIs: http://deb.debian.org/debian\n",
+      "URIs: https://mirror.example.com/debian\n",
+    ));
+    expect(result.output).toContain(
+      `Types: deb\n${NODE_SLIM_SNAPSHOT_MAIN_COMMENT}\nURIs: https://mirror.example.com/debian\n`,
+    );
+    expect(result.output).toContain(
+      `${NODE_SLIM_SNAPSHOT_SECURITY_COMMENT}\nURIs: http://deb.debian.org/debian-security\n`,
+    );
+  });
+
+  it("replaces the node:22-slim security stanza without touching the main stanza or its snapshot comment", () => {
+    const result = helper.applyDeb822SourceOverrides(NODE_SLIM_DEB822_FIXTURE, {
+      securityMirror: "https://mirror.example.com/debian-security",
+    });
+    expect(result.changed).toBe(true);
+    expect(result.output).toBe(NODE_SLIM_DEB822_FIXTURE.replace(
+      "URIs: http://deb.debian.org/debian-security\n",
+      "URIs: https://mirror.example.com/debian-security\n",
+    ));
+    expect(result.output).toContain(
+      `${NODE_SLIM_SNAPSHOT_MAIN_COMMENT}\nURIs: http://deb.debian.org/debian\n`,
+    );
+  });
+
+  it("replaces both node:22-slim stanzas independently while preserving every snapshot comment exactly", () => {
+    const result = helper.applyDeb822SourceOverrides(NODE_SLIM_DEB822_FIXTURE, {
+      mainMirror: "https://mirror.example.com/debian",
+      securityMirror: "https://mirror.example.com/debian-security",
+    });
+    expect(result.changed).toBe(true);
+    expect(result.output).toContain("URIs: https://mirror.example.com/debian\n");
+    expect(result.output).toContain("URIs: https://mirror.example.com/debian-security\n");
+    expect(result.output.split(NODE_SLIM_SNAPSHOT_MAIN_COMMENT).length).toBe(2);
+    expect(result.output.split(NODE_SLIM_SNAPSHOT_SECURITY_COMMENT).length).toBe(2);
+    expect(result.output).not.toContain("deb.debian.org");
+  });
+
+  it("keeps the node:22-slim snapshot byte-identical when nothing is configured", () => {
+    const result = helper.applyDeb822SourceOverrides(NODE_SLIM_DEB822_FIXTURE, {});
+    expect(result.changed).toBe(false);
+    expect(result.output).toBe(NODE_SLIM_DEB822_FIXTURE);
+  });
+
+  it("keeps comments before any stanza as prose and comments inside stanzas exact", () => {
+    const content = [
+      "# leading prose comment",
+      "Types: deb",
+      "# in-stanza snapshot comment",
+      "URIs: http://deb.debian.org/debian",
+      "Suites: bookworm",
+      "",
+    ].join("\n");
+    const result = helper.applyDeb822SourceOverrides(content, {
+      mainMirror: "https://mirror.example.com/debian",
+    });
+    expect(result.output).toBe([
+      "# leading prose comment",
+      "Types: deb",
+      "# in-stanza snapshot comment",
+      "URIs: https://mirror.example.com/debian",
+      "Suites: bookworm",
+      "",
+    ].join("\n"));
+  });
+
+  it("fails closed on continuation lines after an in-stanza comment", () => {
+    const ambiguous = [
+      "Types: deb",
+      "# snapshot comment clears continuation context",
+      " continuation without a field",
+      "URIs: http://deb.debian.org/debian",
+      "Suites: bookworm",
+      "",
+    ].join("\n");
+    expect(() => helper.applyDeb822SourceOverrides(ambiguous, {
+      mainMirror: "https://mirror.example.com/debian",
+    })).toThrow(/Malformed deb822 sources/);
   });
 
   it("fails when an override is requested but the deb822 input is malformed", () => {
@@ -315,6 +472,125 @@ describe("Worker deb822 source override CLI", () => {
     expect(String(failure?.stderr)).toContain(helper.APT_MAIN_MIRROR_ENV);
     expect(String(failure?.stderr)).not.toContain(invalidValue);
     expect(readFileSync(sourcesPath, "utf8")).toBe(DEBIAN_SOURCES_FIXTURE);
+  });
+});
+
+describe("Worker build source environment-name CLI mode", () => {
+  const NPM_REGISTRY_ENV = "HOMERAIL_WORKER_BUILD_NPM_REGISTRY";
+
+  function printCliEnv(overrides: Record<string, string> = {}): NodeJS.ProcessEnv {
+    return { PATH: process.env.PATH ?? "", ...overrides };
+  }
+
+  function runPrintEnv(name: string, overrides: Record<string, string> = {}) {
+    return execFileAsync(process.execPath, [helperScriptPath, helper.PRINT_ENV_FLAG, name], {
+      env: printCliEnv(overrides),
+    }).then(
+      (result) => ({ code: 0, stdout: String(result.stdout), stderr: String(result.stderr) }),
+      (error) => {
+        const failure = error as { code?: number | string; stdout?: unknown; stderr?: unknown };
+        return {
+          code: Number(failure.code ?? 1),
+          stdout: String(failure.stdout ?? ""),
+          stderr: String(failure.stderr ?? ""),
+        };
+      },
+    );
+  }
+
+  it("prints only the normalized public URL and receives only the variable name in argv", async () => {
+    const result = await runPrintEnv(helper.APT_MAIN_MIRROR_ENV, {
+      [helper.APT_MAIN_MIRROR_ENV]: "HTTPS://Mirror.Example.com/debian/",
+    });
+    expect(result.code).toBe(0);
+    expect(result.stdout).toBe("https://mirror.example.com/debian\n");
+    expect(result.stderr).toBe("");
+  });
+
+  it("normalizes default ports and bracketed IPv6 identically for every source key", async () => {
+    const cases: [string, string][] = [
+      ["http://mirror.example.com:80/debian", "http://mirror.example.com/debian"],
+      ["https://mirror.example.com:443/", "https://mirror.example.com"],
+      ["http://[2001:DB8::1]:8080/debian", "http://[2001:db8::1]:8080/debian"],
+    ];
+    for (const name of [helper.APT_MAIN_MIRROR_ENV, helper.APT_SECURITY_MIRROR_ENV, NPM_REGISTRY_ENV]) {
+      for (const [value, expected] of cases) {
+        const result = await runPrintEnv(name, { [name]: value });
+        expect(result.code).toBe(0);
+        expect(result.stdout).toBe(`${expected}\n`);
+      }
+    }
+  });
+
+  it("prints nothing and exits 0 for unset-equivalent values", async () => {
+    for (const overrides of [{}, { [helper.APT_MAIN_MIRROR_ENV]: " \t " }]) {
+      const result = await runPrintEnv(helper.APT_MAIN_MIRROR_ENV, overrides);
+      expect(result.code).toBe(0);
+      expect(result.stdout).toBe("");
+    }
+  });
+
+  it("fails before any consumer for prohibited values, naming the key and never echoing the value", async () => {
+    const prohibited = [
+      "http://mirror.example.com:99999/debian",
+      "https://user:secret@mirror.example.com/debian",
+      "https://mirror.example.com/debian?suite=stable",
+      "https://mirror.example.com/debian#fragment",
+      "https://mirror.example.com/deb ian",
+      "https://mirror.example.com/<script>",
+      "ftp://mirror.example.com/debian",
+      "file:///etc/passwd",
+      "not a url",
+    ];
+    // Null bytes cannot cross the process boundary in an environment value;
+    // the in-process validation tests cover that rejection above.
+    for (const value of prohibited) {
+      const result = await runPrintEnv(NPM_REGISTRY_ENV, { [NPM_REGISTRY_ENV]: value });
+      expect(result.code).toBe(1);
+      expect(result.stdout).toBe("");
+      expect(result.stderr).toContain(NPM_REGISTRY_ENV);
+      expect(result.stderr).not.toContain(value);
+    }
+  });
+
+  it("runs entirely in-process through runCli without reading the sources file", () => {
+    const printed: string[] = [];
+    const failures: string[] = [];
+    const exitCode = helper.runCli({
+      argv: [helper.PRINT_ENV_FLAG, NPM_REGISTRY_ENV],
+      env: { [NPM_REGISTRY_ENV]: " https://registry.example.com/ " },
+      readFile: () => {
+        throw new Error("print-env mode must not read the sources file");
+      },
+      writeFile: () => {
+        throw new Error("print-env mode must not write the sources file");
+      },
+      print: (line) => printed.push(line),
+      fail: (message) => failures.push(message),
+    });
+    expect(exitCode).toBe(0);
+    expect(printed).toEqual(["https://registry.example.com"]);
+    expect(failures).toEqual([]);
+  });
+
+  it("rejects malformed invocations without printing a URL", () => {
+    for (const argv of [
+      [helper.PRINT_ENV_FLAG],
+      [helper.PRINT_ENV_FLAG, helper.APT_MAIN_MIRROR_ENV, "extra"],
+      [helper.PRINT_ENV_FLAG, "not a variable name"],
+    ]) {
+      const printed: string[] = [];
+      const failures: string[] = [];
+      const exitCode = helper.runCli({
+        argv,
+        env: { [helper.APT_MAIN_MIRROR_ENV]: "https://mirror.example.com/debian" },
+        print: (line) => printed.push(line),
+        fail: (message) => failures.push(message),
+      });
+      expect(exitCode).toBe(1);
+      expect(printed).toEqual([]);
+      expect(failures).toHaveLength(1);
+    }
   });
 });
 

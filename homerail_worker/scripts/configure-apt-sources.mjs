@@ -17,6 +17,15 @@
  *
  * The script is image-owned build tooling. It is part of the Worker source
  * fingerprint and runs before `apt-get update` in every Dockerfile stage.
+ *
+ * The helper also exposes an environment-name-only CLI mode used by
+ * scripts/lib/worker-build-network.sh:
+ *
+ *   configure-apt-sources.mjs --print-env NAME
+ *
+ * It reads only the environment variable NAME, reuses the WHATWG URL
+ * validation above, and prints the normalized public URL. The URL value
+ * itself never appears in argv.
  */
 
 import * as fs from "node:fs";
@@ -36,9 +45,18 @@ export function normalizeMirrorValue(rawValue) {
 }
 
 export function validateMirrorUrl(rawValue, key) {
+  // Public source URLs are plain ASCII. Reject control characters, raw
+  // whitespace, and non-ASCII input up front because URL parsing silently
+  // strips or rewrites some of it.
   // eslint-disable-next-line no-control-regex
-  if (/[\u0000-\u0020\u007f]/.test(rawValue)) {
-    throw new Error(`${key} must not contain control characters or raw whitespace.`);
+  if (/[^\u0021-\u007e]/.test(rawValue)) {
+    throw new Error(`${key} must not contain control characters, whitespace, or non-ASCII characters.`);
+  }
+  // Fail closed on characters the WHATWG URL parser would percent-encode or
+  // rewrite (a backslash becomes a path separator in special schemes), so the
+  // normalized output never silently differs from the operator's input.
+  if (/["<>`{}\\]/.test(rawValue)) {
+    throw new Error(`${key} must not contain characters that require URL encoding.`);
   }
   let parsed;
   try {
@@ -61,6 +79,18 @@ export function validateMirrorUrl(rawValue, key) {
   return parsed.toString().replace(/\/+$/, "");
 }
 
+export const PRINT_ENV_FLAG = "--print-env";
+const ENV_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+export function normalizedEnvSource(name, env) {
+  if (typeof name !== "string" || !ENV_NAME_PATTERN.test(name)) {
+    throw new Error("environment variable name must match [A-Za-z_][A-Za-z0-9_]*.");
+  }
+  const value = normalizeMirrorValue(env[name]);
+  if (value === undefined) return undefined;
+  return validateMirrorUrl(value, name);
+}
+
 export function parseDeb822Sources(content) {
   const text = String(content).replace(/\r\n/g, "\n");
   const lines = text.split("\n");
@@ -77,9 +107,23 @@ export function parseDeb822Sources(content) {
 
   lines.forEach((line, index) => {
     const trimmed = line.trim();
-    if (trimmed === "" || trimmed.startsWith("#")) {
+    if (trimmed === "") {
       closeStanza();
       blocks.push({ kind: "prose", lines: [line] });
+      return;
+    }
+    if (trimmed.startsWith("#")) {
+      if (stanza) {
+        // Only a blank line delimits active deb822 stanzas. Comments inside
+        // an active stanza are preserved exactly; they clear the
+        // continuation-field context so ambiguous continuation lines fail
+        // closed instead of attaching to the wrong field.
+        stanza.lines.push(line);
+        lastField = null;
+      } else {
+        // Comments before any stanza stay prose.
+        blocks.push({ kind: "prose", lines: [line] });
+      }
       return;
     }
     if (line.startsWith(" ") || line.startsWith("\t")) {
@@ -183,6 +227,25 @@ export function runCli(options = {}) {
     fs.writeFileSync(sourcesPath, output, "utf8");
   });
   const fail = options.fail ?? ((message) => process.stderr.write(`${message}\n`));
+  const print = options.print ?? ((line) => process.stdout.write(`${line}\n`));
+
+  if (argv[0] === PRINT_ENV_FLAG) {
+    if (argv.length !== 2) {
+      fail(`usage: configure-apt-sources.mjs ${PRINT_ENV_FLAG} ENVIRONMENT_VARIABLE_NAME`);
+      return 1;
+    }
+    let normalized;
+    try {
+      normalized = normalizedEnvSource(argv[1], env);
+    } catch (error) {
+      fail(`HomeRail Worker build source override failed: ${error.message}`);
+      return 1;
+    }
+    if (normalized !== undefined) {
+      print(normalized);
+    }
+    return 0;
+  }
 
   const sourcesPath = argv[0] || DEFAULT_DEB822_SOURCES_PATH;
   const mainMirror = normalizeMirrorValue(env[APT_MAIN_MIRROR_ENV]);

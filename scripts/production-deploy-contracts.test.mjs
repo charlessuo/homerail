@@ -350,6 +350,10 @@ test("production deployment preserves database compatibility across success and 
     write("scripts/run-production-service.sh", "#!/usr/bin/env bash\nexit 0\n", 0o755);
     write("scripts/lib/production-runtime.sh", fs.readFileSync(path.join(repoRoot, "scripts", "lib", "production-runtime.sh"), "utf8"), 0o755);
     write("scripts/lib/worker-build-network.sh", fs.readFileSync(path.join(repoRoot, "scripts", "lib", "worker-build-network.sh"), "utf8"), 0o755);
+    // The shared helper delegates URL validation to this Worker script; the
+    // sandbox must stage it at the exact repository-relative path or builds
+    // must fail closed instead of silently keeping unknown sources.
+    write("homerail_worker/scripts/configure-apt-sources.mjs", fs.readFileSync(path.join(repoRoot, "homerail_worker/scripts/configure-apt-sources.mjs"), "utf8"), 0o755);
 
     fakeCommand("docker", `#!/usr/bin/env bash\nif [ "${'${1:-}'}" = network ] && [ "${'${2:-}'}" = inspect ] && [ "${'${3:-}'}" = bridge ]; then echo 172.17.0.1; fi\nif [ "${'${1:-}'}" = build ]; then printf '%s\\n' "$@" > "$CAPTURE_DOCKER_BUILD_ARGS"; fi\nif [ "${'${1:-}'}" = image ] && [ "${'${2:-}'}" = rm ]; then printf '%s\\n' "${'${3:-}'}" >> "$CAPTURE_DOCKER_REMOVALS"; fi\nexit 0\n`);
     fakeCommand("codex", "#!/usr/bin/env bash\nexit 0\n");
@@ -632,6 +636,57 @@ test("worker build network helper validates sources and forwards proxy names onl
     "no_proxy",
   ]);
   assert.doesNotMatch(custom.stdout, /proxy\.example/);
+
+  // A NODE_BIN shim captures the exact argv handed to Node: only environment
+  // variable names and the helper path may cross the boundary, never values.
+  const argvCaptureRoot = fs.mkdtempSync(path.join(os.tmpdir(), "homerail-build-network-argv-"));
+  const argvLog = path.join(argvCaptureRoot, "node-argv.txt");
+  const nodeShim = path.join(argvCaptureRoot, "node");
+  fs.writeFileSync(
+    nodeShim,
+    `#!/usr/bin/env bash
+printf '%s\\n' "$@" >> "$ARGV_LOG"
+exec "${process.execPath}" "$@"
+`,
+    { mode: 0o755 },
+  );
+  try {
+    const shimmed = runHelper({
+      NODE_BIN: nodeShim,
+      ARGV_LOG: argvLog,
+      HOMERAIL_WORKER_BUILD_APT_MIRROR: "https://deb.example.com/debian/",
+      HOMERAIL_WORKER_BUILD_NPM_REGISTRY: "https://npm.example.com/",
+      HTTPS_PROXY: "http://proxy.example:3128",
+    });
+    assert.equal(shimmed.status, 0, shimmed.stderr);
+    assert.deepEqual(shimmed.stdout.trim().split("\n"), [
+      "--build-arg",
+      "HOMERAIL_WORKER_BUILD_APT_MIRROR=https://deb.example.com/debian",
+      "--build-arg",
+      "NPM_CONFIG_REGISTRY=https://npm.example.com",
+      "--build-arg",
+      "HTTPS_PROXY",
+    ]);
+    const capturedArgv = fs.readFileSync(argvLog, "utf8");
+    assert.match(capturedArgv, /--print-env/);
+    assert.match(capturedArgv, /configure-apt-sources\.mjs/);
+    for (const expected of [
+      "HOMERAIL_WORKER_BUILD_APT_MIRROR",
+      "HOMERAIL_WORKER_BUILD_APT_SECURITY_MIRROR",
+      "HOMERAIL_WORKER_BUILD_NPM_REGISTRY",
+    ]) {
+      assert.ok(capturedArgv.includes(expected), `delegation must name ${expected} only`);
+    }
+    for (const prohibited of [
+      "https://deb.example.com/debian/",
+      "https://npm.example.com/",
+      "http://proxy.example:3128",
+    ]) {
+      assert.ok(!capturedArgv.includes(prohibited), "source and proxy values must never reach argv");
+    }
+  } finally {
+    fs.rmSync(argvCaptureRoot, { recursive: true, force: true });
+  }
 
   const invalidValues = {
     HOMERAIL_WORKER_BUILD_APT_MIRROR: [

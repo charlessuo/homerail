@@ -92,6 +92,50 @@ describe("resolveWorkerBuildNetwork", () => {
     expect(pathSlashed.aptMirror).toBe("https://mirrors.example.com/debian");
   });
 
+  it("normalizes default ports, scheme/host case, and bracketed IPv6 consistently", () => {
+    const defaultPorts = resolveWorkerBuildNetwork({
+      HOMERAIL_WORKER_BUILD_APT_MIRROR: "http://mirrors.example.com:80/debian",
+      HOMERAIL_WORKER_BUILD_APT_SECURITY_MIRROR: "https://mirrors.example.com:443/debian-security",
+      HOMERAIL_WORKER_BUILD_NPM_REGISTRY: "HTTPS://REGISTRY.EXAMPLE.COM/",
+    });
+    expect(workerBuildNetworkDockerArgs(defaultPorts)).toEqual([
+      "--build-arg", "HOMERAIL_WORKER_BUILD_APT_MIRROR=http://mirrors.example.com/debian",
+      "--build-arg", "HOMERAIL_WORKER_BUILD_APT_SECURITY_MIRROR=https://mirrors.example.com/debian-security",
+      "--build-arg", "NPM_CONFIG_REGISTRY=https://registry.example.com",
+    ]);
+
+    const ipv6 = resolveWorkerBuildNetwork({
+      HOMERAIL_WORKER_BUILD_APT_MIRROR: "http://[2001:DB8::1]:8080/debian",
+    });
+    expect(workerBuildNetworkDockerArgs(ipv6)).toEqual([
+      "--build-arg", "HOMERAIL_WORKER_BUILD_APT_MIRROR=http://[2001:db8::1]:8080/debian",
+    ]);
+  });
+
+  it("rejects port 99999 and non-numeric ports for every source key without echoing the value", () => {
+    for (const value of [
+      "http://mirrors.example.com:99999/debian",
+      "https://mirrors.example.com:port/debian",
+    ]) {
+      for (const key of [
+        "HOMERAIL_WORKER_BUILD_APT_MIRROR",
+        "HOMERAIL_WORKER_BUILD_APT_SECURITY_MIRROR",
+        "HOMERAIL_WORKER_BUILD_NPM_REGISTRY",
+      ]) {
+        let caught: unknown;
+        try {
+          resolveWorkerBuildNetwork({ [key]: value });
+        } catch (error) {
+          caught = error;
+        }
+        expect(caught).toBeInstanceOf(WorkerBuildNetworkError);
+        const message = (caught as Error).message;
+        expect(message).toContain(key);
+        expect(message).not.toContain(value);
+      }
+    }
+  });
+
   const invalidValues = [
     "ftp://mirrors.example.com/debian",
     "file:///etc/passwd",

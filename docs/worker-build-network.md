@@ -28,8 +28,13 @@ with the same environment names, validation, and argument semantics:
   (also used by the PR Review and Three-Worker Showcase wrappers).
 
 The operator scripts share `scripts/lib/worker-build-network.sh`, which
-validates the environment and assembles a Docker argv array without ever
-evaluating input.
+assembles a Docker argv array without ever evaluating input. The shell
+helper consumes only environment variable names and delegates URL
+normalization and validation to the Worker WHATWG URL helper,
+`homerail_worker/scripts/configure-apt-sources.mjs --print-env NAME`, so a
+source value never appears in argv, captured commands, failures, or logs.
+`${NODE_BIN:-node}` selects the Node binary used for that delegation; the
+helper resolves it from its own repository-relative location.
 
 ## Validation contract
 
@@ -38,7 +43,12 @@ evaluating input.
   username, password, query, fragment, control characters, or raw
   whitespace.
 - Trailing slashes, scheme case, and host case are normalized consistently,
-  so semantically identical URLs produce identical build arguments.
+  so semantically identical URLs produce identical build arguments. Default
+  ports are elided and bracketed IPv6 hosts are lower-cased by the same
+  WHATWG rules.
+- Values are plain ASCII and contain no characters that the URL parser would
+  percent-encode or rewrite; such inputs fail closed instead of shipping a
+  normalized value that differs from what the operator configured.
 - Invalid values are rejected before Docker starts. The error names the
   configuration key but never its value.
 
