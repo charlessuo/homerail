@@ -50,6 +50,13 @@ interface VoiceModelBody {
 
 type VoiceEndpointProbeKind = "http" | "websocket";
 
+type VoiceEndpointProbeOutcome =
+  | "verified"
+  | "authentication_required"
+  | "not_found"
+  | "rejected"
+  | "unreachable";
+
 interface VoiceEndpointProbeCandidate {
   id: string;
   kind: VoiceEndpointProbeKind;
@@ -60,6 +67,7 @@ interface VoiceEndpointProbeResult extends VoiceEndpointProbeCandidate {
   ok: boolean;
   reachable: boolean;
   status_code?: number;
+  outcome?: VoiceEndpointProbeOutcome;
   message: string;
 }
 
@@ -709,11 +717,20 @@ async function _probeHttpVoiceEndpoint(
     await response.body?.cancel().catch(() => {});
     const status = response.status;
     const ok = status >= 200 && status < 500 && status !== 404;
+    const outcome: VoiceEndpointProbeOutcome | undefined =
+      status === 401 || status === 403
+        ? "authentication_required"
+        : status === 404
+          ? "not_found"
+          : status >= 500
+            ? "rejected"
+            : undefined;
     return {
       ...candidate,
       ok,
       reachable: true,
       status_code: status,
+      ...(outcome ? { outcome } : {}),
       message: ok
         ? status >= 400 ? "Endpoint is reachable and requested input or authentication" : "Endpoint is reachable"
         : `Endpoint returned HTTP ${status}`,
@@ -723,6 +740,7 @@ async function _probeHttpVoiceEndpoint(
       ...candidate,
       ok: false,
       reachable: false,
+      outcome: "unreachable",
       message: error instanceof Error ? error.message : String(error),
     };
   }
@@ -742,28 +760,60 @@ function _probeWebSocketVoiceEndpoint(
       handshakeTimeout: VOICE_ENDPOINT_PROBE_TIMEOUT_MS,
     });
     socket.once("open", () => {
-      finish({ ...candidate, ok: true, reachable: true, message: "WebSocket handshake succeeded" });
+      // Only a completed WebSocket upgrade/open proves native realtime capability.
+      finish({
+        ...candidate,
+        ok: true,
+        reachable: true,
+        outcome: "verified",
+        message: "WebSocket handshake succeeded",
+      });
       socket.close();
     });
     socket.once("unexpected-response", (_request, response) => {
       const status = response.statusCode ?? 0;
       response.resume();
-      const ok = status >= 200 && status < 500 && status !== 404 && status !== 405;
+      // Any pre-upgrade HTTP response means the WebSocket handshake did not
+      // complete, so it never verifies native realtime support. 401/403 only
+      // prove the endpoint is reachable and requires authentication.
+      const outcome: VoiceEndpointProbeOutcome =
+        status === 401 || status === 403
+          ? "authentication_required"
+          : status === 404 || status === 405
+            ? "not_found"
+            : "rejected";
+      const message =
+        outcome === "authentication_required"
+          ? "WebSocket endpoint is reachable but requires authentication before upgrade"
+          : outcome === "not_found"
+            ? `WebSocket handshake returned HTTP ${status}: endpoint not found or upgrade unsupported`
+            : `WebSocket handshake returned HTTP ${status || "unknown"}`;
       finish({
         ...candidate,
-        ok,
+        ok: false,
         reachable: true,
         status_code: status || undefined,
-        message: ok
-          ? "WebSocket endpoint is reachable and requires authentication or handshake parameters"
-          : `WebSocket handshake returned HTTP ${status || "unknown"}`,
+        outcome,
+        message,
       });
     });
     socket.once("error", (error) => {
-      finish({ ...candidate, ok: false, reachable: false, message: error.message });
+      finish({
+        ...candidate,
+        ok: false,
+        reachable: false,
+        outcome: "unreachable",
+        message: error.message,
+      });
     });
     socket.once("close", () => {
-      finish({ ...candidate, ok: false, reachable: true, message: "WebSocket closed before the handshake completed" });
+      finish({
+        ...candidate,
+        ok: false,
+        reachable: true,
+        outcome: "rejected",
+        message: "WebSocket closed before the handshake completed",
+      });
     });
   });
 }
