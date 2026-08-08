@@ -312,6 +312,36 @@ hr start --ui --public \
   --ui-public-url https://homerail-ui.example.com
 ```
 
+`--ui-public-url` (or `HOMERAIL_UI_PUBLIC_URL`) must be an exact `http(s)`
+Origin — no wildcard, path, query, fragment, or credentials. HomeRail rejects
+anything else at startup instead of silently trusting a truncated Origin. The
+same canonical Origin is shared with the Manager admin allowlist
+(`HOMERAIL_MANAGER_ADMIN_ORIGINS`) and with the static Agent UI proxy, which
+authorizes protected UI mutations from either the request-derived self Origin
+(direct local/LAN access) or the explicitly configured public Origin. With no
+explicit public URL, mutation authorization stays strictly request-derived.
+`Forwarded` and `X-Forwarded-*` headers are never trusted for this decision.
+
+FN Connect (fnOS) rewrites the Host it forwards to HomeRail, so the browser
+Origin no longer matches the internal Host. Configure the exact public Origin
+the proxy presents:
+
+```bash
+# Browser loads https://homerail.fn.example; FN Connect forwards the request
+# to HomeRail with an internal Host such as 127.0.0.1:19192.
+hr start --ui \
+  --ui-public-url https://homerail.fn.example
+```
+
+Generic Tailscale Serve / nginx / Caddy setups work the same way: terminate
+TLS in the proxy, forward to the local Agent UI port, and configure the public
+Origin:
+
+```bash
+hr start --ui --public \
+  --ui-public-url https://homerail.tail1234.ts.net
+```
+
 Worker containers connect back to the Manager through the URL Manager passes to
 Node. On Docker Desktop the default `host.docker.internal` mapping is usually
 enough; on Linux use Docker `host-gateway` support or set
