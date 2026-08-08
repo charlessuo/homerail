@@ -1,4 +1,3 @@
-#!/usr/bin/env node
 /**
  * HomeRail Worker image build helper.
  *
