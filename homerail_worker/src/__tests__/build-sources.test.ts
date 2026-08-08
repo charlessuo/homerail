@@ -264,6 +264,24 @@ describe("Worker deb822 source override helper", () => {
     expect(securityOnly.output).toContain("URIs: http://deb.debian.org/debian\n");
   });
 
+  it("fails closed when the requested main or security stanza class is absent", () => {
+    const [mainStanza, securityStanza] = DEBIAN_SOURCES_FIXTURE.trimEnd().split("\n\n");
+    expect(() => helper.applyDeb822SourceOverrides(`${securityStanza}\n`, {
+      mainMirror: "https://mirror.example.com/debian",
+    })).toThrow(helper.APT_MAIN_MIRROR_ENV);
+    expect(() => helper.applyDeb822SourceOverrides(`${mainStanza}\n`, {
+      securityMirror: "https://mirror.example.com/debian-security",
+    })).toThrow(helper.APT_SECURITY_MIRROR_ENV);
+  });
+
+  it("counts an already-matching stanza as an applied override", () => {
+    const result = helper.applyDeb822SourceOverrides(DEBIAN_SOURCES_FIXTURE, {
+      mainMirror: "http://deb.debian.org/debian",
+    });
+    expect(result.changed).toBe(false);
+    expect(result.output).toBe(DEBIAN_SOURCES_FIXTURE);
+  });
+
   it("replaces the node:22-slim main stanza without touching the security stanza or its snapshot comment", () => {
     const result = helper.applyDeb822SourceOverrides(NODE_SLIM_DEB822_FIXTURE, {
       mainMirror: "https://mirror.example.com/debian",
@@ -474,6 +492,20 @@ describe("Worker deb822 source override CLI", () => {
     expect(failure?.code).toBe(1);
     expect(String(failure?.stderr)).toContain("Malformed deb822 sources");
     expect(readFileSync(sourcesPath, "utf8")).toBe("not deb822 at all\n");
+  });
+
+  it("fails without writing when the configured stanza class is absent", async () => {
+    const mainOnly = `${DEBIAN_SOURCES_FIXTURE.trimEnd().split("\n\n")[0]}\n`;
+    const sourcesPath = makeSourcesFile(mainOnly);
+    const failure = await execFileAsync(process.execPath, [helperScriptPath, sourcesPath], {
+      env: cliEnv({
+        [helper.APT_SECURITY_MIRROR_ENV]: "https://mirror.example.com/debian-security",
+      }),
+    }).then(() => undefined, (error) => error);
+    expect(failure).toBeDefined();
+    expect(failure?.code).toBe(1);
+    expect(String(failure?.stderr)).toContain(helper.APT_SECURITY_MIRROR_ENV);
+    expect(readFileSync(sourcesPath, "utf8")).toBe(mainOnly);
   });
 
   it("fails for invalid mirror values naming the key without echoing the value", async () => {

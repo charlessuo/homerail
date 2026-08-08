@@ -1153,6 +1153,35 @@ it("keeps default build arguments and docker-managed proxy mode without configur
   );
 });
 
+it("reports invalid build-network configuration before a build is requested", () => {
+  const runner: DagEnvironmentCommandRunner = vi.fn(async () => dockerVersion());
+  const spawnImpl = vi.fn();
+  const controller = new DagEnvironmentController({
+    commandRunner: runner,
+    spawnImpl: spawnImpl as never,
+    repoRoot: currentRepoRoot(),
+    statusPath: statusPath(),
+    env: {
+      HOMERAIL_WORKER_BUILD_APT_MIRROR: "https://user:secret@mirrors.example.com/debian",
+    },
+  });
+
+  const status = controller.getStatus();
+  expect(status.build).toBeUndefined();
+  expect(status.worker_image).toMatchObject({
+    status: "error",
+    reason: "worker_build_network_invalid",
+    reason_code: "worker_build_network_invalid",
+  });
+  expect(status.worker_image.message).toContain("HOMERAIL_WORKER_BUILD_APT_MIRROR");
+  expect(status.worker_image.error).toContain("HOMERAIL_WORKER_BUILD_APT_MIRROR");
+  expect(status.worker_image.message).not.toContain("secret");
+  expect(status.worker_image.message).not.toContain("mirrors.example.com");
+  expect(status.worker_image.build_network).toBeUndefined();
+  expect(spawnImpl).not.toHaveBeenCalled();
+  expect(runner).not.toHaveBeenCalled();
+});
+
 it("fails the build before Docker starts when build-network configuration is invalid", async () => {
   const runner: DagEnvironmentCommandRunner = vi.fn(async () => dockerVersion());
   const spawnImpl = vi.fn();
@@ -1175,6 +1204,7 @@ it("fails the build before Docker starts when build-network configuration is inv
   expect(status.build?.error).not.toContain("mirrors.example.com");
   expect(status.build?.logs.join("\n")).not.toContain("secret");
   expect(status.worker_image.status).toBe("error");
+  expect(status.worker_image.reason_code).toBe("worker_build_network_invalid");
   expect(status.worker_image.error).toContain("HOMERAIL_WORKER_BUILD_APT_MIRROR");
   expect(status.worker_image.build_network).toBeUndefined();
   expect(spawnImpl).not.toHaveBeenCalled();

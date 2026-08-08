@@ -70,6 +70,7 @@ export type DagEnvironmentReasonCode =
   | "worker_image_missing"
   | "worker_image_stale"
   | "worker_image_incompatible"
+  | "worker_build_network_invalid"
   | "worker_image_build_failed";
 
 export type ImageCompatibility = "current" | "stale" | "incompatible" | "unknown";
@@ -840,7 +841,7 @@ export class DagEnvironmentController {
     if (!network) {
       this.failBuild(
         this.buildNetworkError?.message ?? "Worker build network configuration is invalid.",
-        "worker_image_build_failed",
+        "worker_build_network_invalid",
         operationId,
       );
       return;
@@ -1081,6 +1082,20 @@ export class DagEnvironmentController {
   }
 
   private applyBuildNetworkStatus(): void {
+    if (this.buildNetworkError) {
+      const message = this.buildNetworkError.message;
+      this.status.worker_image = {
+        ...this.status.worker_image,
+        status: "error",
+        image: this.workerImage,
+        reason: "worker_build_network_invalid",
+        reason_code: "worker_build_network_invalid",
+        message,
+        error: message,
+      };
+      delete this.status.worker_image.build_network;
+      return;
+    }
     const summary = this.currentBuildNetworkSummary() ?? this.persistedBuildNetworkSummary;
     if (summary) {
       this.status.worker_image.build_network = summary;

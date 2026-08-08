@@ -19,8 +19,9 @@
 #
 # Recognized uppercase and lowercase HTTP_PROXY, HTTPS_PROXY, and NO_PROXY
 # variables are forwarded as value-less Docker --build-arg NAME entries only
-# when non-empty. Their values are never expanded into argv, inspected, or
-# logged; the Docker client/BuildKit proxy configuration remains authoritative.
+# when they contain a non-whitespace character. Their values are never expanded
+# into argv, inspected, or logged; the Docker client/BuildKit proxy configuration
+# remains authoritative.
 #
 # The helper populates the global HOMERAIL_WORKER_BUILD_NETWORK_ARGS argv
 # array. This avoids Bash 4.3 namerefs so the contract also works with the
@@ -76,9 +77,9 @@ homerail_worker_build_network_normalize_source() {
 #   --build-arg HOMERAIL_WORKER_BUILD_APT_MIRROR=<url>
 #   --build-arg HOMERAIL_WORKER_BUILD_APT_SECURITY_MIRROR=<url>
 #   --build-arg NPM_CONFIG_REGISTRY=<url>
-# plus one value-less --build-arg NAME entry for every non-empty recognized
-# proxy variable. Returns 1 before any Docker invocation when a value is
-# invalid.
+# plus one value-less --build-arg NAME entry for every recognized proxy variable
+# containing a non-whitespace character. Returns 1 before any Docker invocation
+# when a value is invalid.
 homerail_worker_build_network_args() {
   HOMERAIL_WORKER_BUILD_NETWORK_ARGS=()
   local name normalized proxy_name
@@ -95,7 +96,7 @@ homerail_worker_build_network_args() {
     fi
   done
   for proxy_name in HTTP_PROXY HTTPS_PROXY NO_PROXY http_proxy https_proxy no_proxy; do
-    if [ -n "${!proxy_name-}" ]; then
+    if [[ "${!proxy_name-}" =~ [^[:space:]] ]]; then
       HOMERAIL_WORKER_BUILD_NETWORK_ARGS+=("--build-arg" "$proxy_name")
     fi
   done

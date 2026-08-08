@@ -209,10 +209,18 @@ export function applyDeb822SourceOverrides(content, overrides = {}) {
 
   const { blocks, endsWithNewline } = parseDeb822Sources(content);
   let changed = false;
+  let matchedMain = false;
+  let matchedSecurity = false;
   for (const block of blocks) {
     if (block.kind !== "stanza") continue;
-    const target = isSecurityStanza(block) ? validatedSecurity : validatedMain;
+    const security = isSecurityStanza(block);
+    const target = security ? validatedSecurity : validatedMain;
     if (target === undefined) continue;
+    if (security) {
+      matchedSecurity = true;
+    } else {
+      matchedMain = true;
+    }
     const uris = block.fields.get("URIs");
     const replacement = `URIs: ${target}`;
     if (block.lines[uris.lineIndex] === replacement && uris.continuationIndexes.length === 0) {
@@ -223,6 +231,16 @@ export function applyDeb822SourceOverrides(content, overrides = {}) {
       block.lines.splice(continuationIndex, 1);
     }
     changed = true;
+  }
+  if (validatedMain !== undefined && !matchedMain) {
+    throw new Error(
+      `Malformed deb822 sources: no non-security stanza is available for ${APT_MAIN_MIRROR_ENV}.`,
+    );
+  }
+  if (validatedSecurity !== undefined && !matchedSecurity) {
+    throw new Error(
+      `Malformed deb822 sources: no security stanza is available for ${APT_SECURITY_MIRROR_ENV}.`,
+    );
   }
   const output = blocks.map((block) => block.lines.join("\n")).join("\n") + (endsWithNewline ? "\n" : "");
   return { output, changed };

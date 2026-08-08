@@ -343,6 +343,9 @@ exec "${process.execPath}" "$@"
   const proxy = runRunner({
     HTTPS_PROXY: "http://proxy.live.example:3128",
     no_proxy: "localhost",
+    HTTP_PROXY: " \t ",
+    https_proxy: "\n ",
+    NO_PROXY: "   ",
   });
   assert.equal(proxy.status, 3, proxy.stderr);
   const proxyArgs = fs.readFileSync(capturePath, "utf8");

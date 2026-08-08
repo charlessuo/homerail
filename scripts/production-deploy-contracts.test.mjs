@@ -516,6 +516,9 @@ test("production deployment preserves database compatibility across success and 
       HTTPS_PROXY: "http://proxy.fn.example:3128",
       http_proxy: "http://proxy.fn.example:3128",
       NO_PROXY: "localhost",
+      HTTP_PROXY: " \t ",
+      https_proxy: "\n ",
+      no_proxy: "   ",
     },
   });
   try {
@@ -614,6 +617,14 @@ test("worker build network helper validates sources and forwards proxy names onl
   const whitespaceOnly = runHelper({ HOMERAIL_WORKER_BUILD_APT_MIRROR: " \t " });
   assert.equal(whitespaceOnly.status, 0, whitespaceOnly.stderr);
   assert.equal(whitespaceOnly.stdout, "");
+
+  const whitespaceOnlyProxy = runHelper({
+    HTTP_PROXY: " \t ",
+    https_proxy: "\n  ",
+    NO_PROXY: "   ",
+  });
+  assert.equal(whitespaceOnlyProxy.status, 0, whitespaceOnlyProxy.stderr);
+  assert.equal(whitespaceOnlyProxy.stdout, "");
 
   const custom = runHelper({
     HOMERAIL_WORKER_BUILD_APT_MIRROR: "HTTPS://DEB.example.com:8443/debian/",
