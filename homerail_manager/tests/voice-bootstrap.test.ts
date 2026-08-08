@@ -1772,6 +1772,67 @@ describe("voice bootstrap routes", () => {
     }
   });
 
+  it("retries POST-only transcription routes when HEAD returns 404", async () => {
+    let headProbeCalls = 0;
+    let postProbeCalls = 0;
+    let postProbeBody = "";
+    const upstream = http.createServer((req, res) => {
+      if (req.url === "/v1/audio/transcriptions" && req.method === "HEAD") {
+        headProbeCalls += 1;
+        res.writeHead(404).end();
+        return;
+      }
+      if (req.url === "/v1/audio/transcriptions" && req.method === "POST") {
+        postProbeCalls += 1;
+        req.setEncoding("utf8");
+        req.on("data", (chunk) => {
+          postProbeBody += chunk;
+        });
+        req.on("end", () => {
+          res.writeHead(400, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: { message: "No input file found for transcription" } }));
+        });
+        return;
+      }
+      res.writeHead(404).end();
+    });
+    const upstreamPort = await listen(upstream);
+    const managerPort = await listen(server);
+
+    try {
+      const response = await fetch(`http://127.0.0.1:${managerPort}/api/voice/endpoints/test`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          endpoints: [{
+            id: "asr_http",
+            kind: "http",
+            url: `http://127.0.0.1:${upstreamPort}/v1/audio/transcriptions`,
+          }],
+        }),
+      });
+      const body = await response.json() as {
+        success: boolean;
+        data: {
+          ok: boolean;
+          results: Array<{ id: string; ok: boolean; reachable: boolean; status_code?: number; outcome?: string }>;
+        };
+      };
+
+      expect(response.status).toBe(200);
+      expect(body.success).toBe(true);
+      expect(body.data.ok).toBe(true);
+      expect(body.data.results).toEqual([
+        expect.objectContaining({ id: "asr_http", ok: true, reachable: true, status_code: 400 }),
+      ]);
+      expect(headProbeCalls).toBe(1);
+      expect(postProbeCalls).toBe(1);
+      expect(postProbeBody).not.toContain("audio");
+    } finally {
+      await close(upstream);
+    }
+  });
+
   it("never verifies realtime capability from pre-upgrade HTTP responses", async () => {
     const statusByPath: Record<string, number> = {
       "/realtime-401": 401,
