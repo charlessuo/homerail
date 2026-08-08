@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import {
+  AsrProtocolError,
   AsrSocketGenerationFence,
   AsrTranscriptionAttemptRegistry,
   beginAsrRealtimeUtterance,
@@ -165,6 +166,28 @@ describe('Agent Voice Cockpit ASR lifecycle helpers', () => {
     })
     expect(disconnected).toBe(1)
     expect(closed).toBe(0)
+  })
+
+  it('preserves an upstream protocol error after reconnecting', async () => {
+    const protocolError = new AsrProtocolError('invalid upstream API key')
+    let error = protocolError.message
+    let cleared = 0
+
+    await recoverAsrRealtimeSession({
+      shouldContinue: () => true,
+      connect: async () => {},
+      disconnect: () => {},
+      clearError: () => {
+        cleared += 1
+        error = ''
+      },
+      clearErrorAfterReconnect: false,
+      reportError: () => {},
+      closeInput: () => {}
+    })
+
+    expect(error).toBe('invalid upstream API key')
+    expect(cleared).toBe(0)
   })
 
   it('reports a reconnect failure and closes only the still-active input', async () => {

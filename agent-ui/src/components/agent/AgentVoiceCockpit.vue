@@ -66,6 +66,7 @@ import {
   AsrTranscriptionDeadlineController
 } from '@/components/agent/asr-transcription-deadline'
 import {
+  AsrProtocolError,
   AsrSocketGenerationFence,
   AsrTranscriptionAttemptRegistry,
   beginAsrRealtimeUtterance,
@@ -4805,7 +4806,7 @@ async function finishUtterance(): Promise<void> {
       if (token !== voiceSessionToken) return
       error.value = err?.message || t('voice.errors.asrFailed')
       liveTranscript.value = ''
-      await recoverAsrRealtimeAfterFailure(token)
+      await recoverAsrRealtimeAfterFailure(token, err instanceof AsrProtocolError)
     } finally {
       if (token === voiceSessionToken) voiceBusy.value = false
     }
@@ -4902,7 +4903,10 @@ function disconnectAsrRealtime(): void {
   asrSocket = null
 }
 
-async function recoverAsrRealtimeAfterFailure(token: number): Promise<void> {
+async function recoverAsrRealtimeAfterFailure(
+  token: number,
+  preserveErrorAfterReconnect: boolean
+): Promise<void> {
   await recoverAsrRealtimeSession({
     shouldContinue: () =>
       token === voiceSessionToken && listening.value && recognitionMode.value === 'asr',
@@ -4911,6 +4915,7 @@ async function recoverAsrRealtimeAfterFailure(token: number): Promise<void> {
     clearError: () => {
       error.value = ''
     },
+    clearErrorAfterReconnect: !preserveErrorAfterReconnect,
     reportError: reconnectError => {
       error.value =
         reconnectError instanceof Error && reconnectError.message
@@ -4979,7 +4984,7 @@ function handleAsrRealtimeMessage(payload: unknown): void {
   }
   if (event.type === 'error') {
     const message = asrTextField(event, ['error', 'message']) || t('voice.errors.asrResponse')
-    rejectAsrFinal(new Error(message))
+    rejectAsrFinal(new AsrProtocolError(message))
     error.value = message
     return
   }

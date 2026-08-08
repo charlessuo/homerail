@@ -75,21 +75,28 @@ export class AsrTranscriptionAttemptRegistry {
   }
 }
 
+/** Identifies an upstream protocol response that reconnecting cannot itself resolve. */
+export class AsrProtocolError extends Error {
+  override name = 'AsrProtocolError'
+}
+
 export interface RecoverAsrRealtimeSessionOptions {
   shouldContinue: () => boolean
   connect: () => Promise<void>
   disconnect: () => void
   clearError: () => void
+  clearErrorAfterReconnect?: boolean
   reportError: (error: unknown) => void
   closeInput: () => void
 }
 
-/** Reconnects only for the active voice session and clears a recovered stale error. */
+/** Reconnects only for the active voice session and clears recovered transport errors. */
 export async function recoverAsrRealtimeSession({
   shouldContinue,
   connect,
   disconnect,
   clearError,
+  clearErrorAfterReconnect = true,
   reportError,
   closeInput
 }: RecoverAsrRealtimeSessionOptions): Promise<void> {
@@ -100,7 +107,7 @@ export async function recoverAsrRealtimeSession({
       disconnect()
       return
     }
-    clearError()
+    if (clearErrorAfterReconnect) clearError()
   } catch (error) {
     if (!shouldContinue()) return
     reportError(error)
