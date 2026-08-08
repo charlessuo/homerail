@@ -5,6 +5,7 @@ import * as https from "node:https";
 import * as net from "node:net";
 import * as os from "node:os";
 import * as path from "node:path";
+import { buildSync } from "esbuild";
 import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
 import { createProgram } from "../src/index.js";
 
@@ -1157,14 +1158,14 @@ function runtimeRepoRoot(): string {
     path.join(root, "homerail_cli", "package.json"),
     `${JSON.stringify({ name: "homerail-cli-runtime-test", private: true, type: "module" }, null, 2)}\n`,
   );
-  execFileSync(path.resolve("node_modules/esbuild/bin/esbuild"), [
-    path.resolve("src/static-ui-server.ts"),
-    "--bundle",
-    "--platform=node",
-    "--format=esm",
-    "--target=node20",
-    `--outfile=${path.join(root, "homerail_cli", "dist", "static-ui-server.js")}`,
-  ], { stdio: "pipe", timeout: 60_000 });
+  buildSync({
+    entryPoints: [path.resolve("src/static-ui-server.ts")],
+    bundle: true,
+    platform: "node",
+    format: "esm",
+    target: "node20",
+    outfile: path.join(root, "homerail_cli", "dist", "static-ui-server.js"),
+  });
   sharedRuntimeRepoRoot = root;
   return root;
 }
