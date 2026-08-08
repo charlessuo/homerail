@@ -1218,6 +1218,8 @@ function _resolveAsrRealtimeRuntime(): {
 }
 
 function _setupEmulatedAsrSession(client: WebSocket, runtime: ReturnType<typeof _resolveAsrRealtimeRuntime>): void {
+  // These initial values intentionally match a `start` frame. The first utterance
+  // may begin while `session.ready` is in flight; later `start` frames reset state.
   const audioChunks: Buffer[] = [];
   let finishing = false;
   _sendWsJson(client, { type: "ready" });

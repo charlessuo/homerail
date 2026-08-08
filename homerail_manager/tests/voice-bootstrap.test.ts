@@ -2506,7 +2506,7 @@ describe("voice bootstrap routes", () => {
     }
   });
 
-  it("emulates realtime ASR over the backend WebSocket for a configured MiMo ASR setting", async () => {
+  it("accepts the initial emulated realtime ASR utterance without a start frame", async () => {
     const port = await listen(server);
     const baseUrl = `http://127.0.0.1:${port}`;
     await fetch(`${baseUrl}/api/llm-settings`, {
