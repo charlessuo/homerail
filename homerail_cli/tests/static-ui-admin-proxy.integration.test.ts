@@ -821,16 +821,23 @@ async function waitUntil(check: () => Promise<boolean>): Promise<void> {
 describe("runtime UI Origin propagation through hr ui start", () => {
   afterAll(() => {
     if (sharedRuntimeRepoRoot) {
-      fs.rmSync(sharedRuntimeRepoRoot, { recursive: true, force: true });
+      fs.rmSync(sharedRuntimeRepoRoot, {
+        recursive: true,
+        force: true,
+        maxRetries: 5,
+        retryDelay: 100,
+      });
       sharedRuntimeRepoRoot = undefined;
     }
   });
 
-  afterEach(() => {
+  afterEach(async () => {
+    const stoppedPids: number[] = [];
     for (const harness of runtimeHarnesses.splice(0)) {
       for (const name of ["ui-https", "ui"] as const) {
         const pid = runtimePidFile(harness.home, name);
         if (pid === undefined) continue;
+        stoppedPids.push(pid);
         try {
           process.kill(-pid, "SIGTERM");
         } catch {
@@ -842,6 +849,7 @@ describe("runtime UI Origin propagation through hr ui start", () => {
         }
       }
     }
+    await Promise.all(stoppedPids.map((pid) => waitForRuntimePidExit(pid)));
   });
 
   it("propagates the explicit external Origin from flag, environment, and stored config into both static listeners", async () => {
