@@ -55,6 +55,7 @@ export class WorkerBuildNetworkError extends Error {
 const NON_PRINTABLE_OR_NON_ASCII_SOURCE_CHARACTERS = /[^\u0021-\u007e]/;
 const URL_REWRITE_SOURCE_CHARACTERS = /["%<>`^{}|\\]/;
 const URL_PATH_BRACKETS = /[\[\]]/;
+const URL_AUTHORITY_USERINFO = /^[a-z][a-z0-9+.-]*:\/\/[^/?#]*@/i;
 
 function normalizeTrailingSlashes(href: string): string {
   return href.replace(/\/+$/, "");
@@ -78,6 +79,11 @@ function resolveSourceUrl(envKey: string, raw: string | undefined): string | und
       envKey,
       "value must not contain characters that require URL encoding.",
     );
+  }
+  // Check raw authority text as WHATWG parsing drops an empty userinfo marker
+  // (`https://@host/`) before username/password can expose it.
+  if (URL_AUTHORITY_USERINFO.test(trimmed)) {
+    throw new WorkerBuildNetworkError(envKey, "credential-bearing URLs are not supported.");
   }
   let parsed: URL;
   try {

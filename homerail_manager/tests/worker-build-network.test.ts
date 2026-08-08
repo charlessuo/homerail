@@ -143,6 +143,7 @@ describe("resolveWorkerBuildNetwork", () => {
     "https://",
     "https://user:secret@mirrors.example.com/debian",
     "https://user@mirrors.example.com/debian",
+    "https://@mirrors.example.com/debian",
     "https://mirrors.example.com/debian?suite=stable",
     "https://mirrors.example.com/debian#fragment",
     "https://mirrors.example.com/deb ian",
@@ -179,6 +180,13 @@ describe("resolveWorkerBuildNetwork", () => {
       }
     });
   }
+
+  it("allows an at-sign in the path when the authority has no userinfo", () => {
+    const config = resolveWorkerBuildNetwork({
+      HOMERAIL_WORKER_BUILD_NPM_REGISTRY: "https://registry.example.com/scope/@package",
+    });
+    expect(config.npmRegistry).toBe("https://registry.example.com/scope/@package");
+  });
 
   it("forwards only non-empty proxy variable names without values", () => {
     const config = resolveWorkerBuildNetwork({

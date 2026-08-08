@@ -57,6 +57,11 @@ export function validateMirrorUrl(rawValue, key) {
   if (/["%<>`^{}|\\]/.test(rawValue)) {
     throw new Error(`${key} must not contain characters that require URL encoding.`);
   }
+  // WHATWG parsing silently drops an empty userinfo marker, so inspect the
+  // raw authority before parsing while still allowing `@` in the URL path.
+  if (/^[a-z][a-z0-9+.-]*:\/\/[^/?#]*@/i.test(rawValue)) {
+    throw new Error(`${key} must not embed credentials.`);
+  }
   let parsed;
   try {
     parsed = new URL(rawValue);

@@ -213,6 +213,7 @@ describe("Worker deb822 source override helper", () => {
       "http://mirror.example.com:99999/debian",
       "https://mirror.example.com:port/debian",
       "https://user:password@mirror.example.com/debian",
+      "https://@mirror.example.com/debian",
       "https://mirror.example.com/debian?suite=stable",
       "https://mirror.example.com/debian#fragment",
       "https://mirror.example.com/deb ian",
@@ -374,6 +375,7 @@ describe("Worker deb822 source override helper", () => {
       "ftp://mirror.example.com/debian",
       "not a url",
       "https://user:password@mirror.example.com/debian",
+      "https://@mirror.example.com/debian",
       "https://mirror.example.com/debian?component=main",
       "https://mirror.example.com/debian#fragment",
       "https://mirror.example.com/deb ian",
@@ -547,6 +549,7 @@ describe("Worker build source environment-name CLI mode", () => {
     const prohibited = [
       "http://mirror.example.com:99999/debian",
       "https://user:secret@mirror.example.com/debian",
+      "https://@mirror.example.com/debian",
       "https://mirror.example.com/debian?suite=stable",
       "https://mirror.example.com/debian#fragment",
       "https://mirror.example.com/deb ian",
@@ -589,6 +592,13 @@ describe("Worker build source environment-name CLI mode", () => {
     expect(exitCode).toBe(0);
     expect(printed).toEqual(["https://registry.example.com"]);
     expect(failures).toEqual([]);
+  });
+
+  it("allows an at-sign in a source path without treating it as userinfo", () => {
+    expect(helper.validateMirrorUrl(
+      "https://registry.example.com/scope/@package",
+      NPM_REGISTRY_ENV,
+    )).toBe("https://registry.example.com/scope/@package");
   });
 
   it("rejects malformed invocations without printing a URL", () => {
