@@ -571,9 +571,11 @@ test("worker build network contract is shared by production and live entry point
   const runner = fs.readFileSync(path.join(repoRoot, "scripts", "run-dag-patterns-live-runner.sh"), "utf8");
 
   assert.match(deploy, /source "\$SOURCE_ROOT\/scripts\/lib\/worker-build-network\.sh"/);
-  assert.match(deploy, /homerail_worker_build_network_args WORKER_BUILD_NETWORK_ARGS/);
+  assert.match(deploy, /homerail_worker_build_network_args/);
+  assert.match(deploy, /HOMERAIL_WORKER_BUILD_NETWORK_ARGS/);
   assert.match(runner, /source "\$REPO_ROOT\/scripts\/lib\/worker-build-network\.sh"/);
-  assert.match(runner, /homerail_worker_build_network_args LIVE_BUILD_NETWORK_ARGS/);
+  assert.match(runner, /homerail_worker_build_network_args/);
+  assert.match(runner, /HOMERAIL_WORKER_BUILD_NETWORK_ARGS/);
   assert.doesNotMatch(helper, /\beval\b/);
   assert.doesNotMatch(deploy, /\beval\b/);
   assert.doesNotMatch(runner, /\beval\b/);
@@ -598,9 +600,8 @@ test("worker build network helper validates sources and forwards proxy names onl
     [
       "set -euo pipefail",
       'source "$1"',
-      "args=()",
-      "homerail_worker_build_network_args args || exit 1",
-      'if [ ${#args[@]} -gt 0 ]; then printf "%s\\n" "${args[@]}"; fi',
+      "homerail_worker_build_network_args || exit 1",
+      'if [ ${#HOMERAIL_WORKER_BUILD_NETWORK_ARGS[@]} -gt 0 ]; then printf "%s\\n" "${HOMERAIL_WORKER_BUILD_NETWORK_ARGS[@]}"; fi',
     ].join("\n"),
     "worker-build-network-helper-test",
     helperPath,

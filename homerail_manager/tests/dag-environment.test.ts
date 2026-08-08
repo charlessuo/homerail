@@ -1071,7 +1071,7 @@ it("forwards validated build-network sources and proxy names to the Docker build
   ]));
   // The trailing-slash variant must normalize to the same argument value.
   expect(args.join("\u0000")).not.toContain("debian/\u0000");
-  expect(args).not.toContain("--build-arg\u0000http_proxy");
+  expect(args).not.toContain("http_proxy");
   // Proxy arguments carry names only; values remain in the child environment.
   const proxyIndex = args.indexOf("HTTPS_PROXY");
   expect(proxyIndex).toBeGreaterThan(0);

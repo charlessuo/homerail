@@ -24,7 +24,8 @@ test("routes live jobs to isolated runner slots and serializes only Manager port
   assert.match(actionlint, /- homerail-pr-review/);
   assert.match(runner, /org\.homerail\.live_slot=\$LIVE_SLOT/);
   assert.match(runner, /source "\$REPO_ROOT\/scripts\/lib\/worker-build-network\.sh"/);
-  assert.match(runner, /homerail_worker_build_network_args LIVE_BUILD_NETWORK_ARGS/);
+  assert.match(runner, /homerail_worker_build_network_args/);
+  assert.match(runner, /HOMERAIL_WORKER_BUILD_NETWORK_ARGS/);
   assert.doesNotMatch(runner, /\beval\b/);
   assert.match(runner, /LIVE_RUN_LABEL="org\.homerail\.live_run_v2"/);
   assert.match(runner, /--label "\$LIVE_RUN_LABEL=\$RUN_KEY"/);

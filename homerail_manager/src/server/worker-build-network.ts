@@ -52,7 +52,8 @@ export class WorkerBuildNetworkError extends Error {
   }
 }
 
-const FORBIDDEN_SOURCE_CHARACTERS = /[\u0000-\u001f\u007f\s]/;
+const NON_PRINTABLE_OR_NON_ASCII_SOURCE_CHARACTERS = /[^\u0021-\u007e]/;
+const URL_REWRITE_SOURCE_CHARACTERS = /["<>`{}\\]/;
 
 function normalizeTrailingSlashes(href: string): string {
   return href.replace(/\/+$/, "");
@@ -62,12 +63,19 @@ function resolveSourceUrl(envKey: string, raw: string | undefined): string | und
   if (typeof raw !== "string") return undefined;
   const trimmed = raw.trim();
   if (!trimmed) return undefined;
-  // URL parsing silently strips ASCII tabs/newlines and tolerates other
-  // surprises, so reject control characters and whitespace up front.
-  if (FORBIDDEN_SOURCE_CHARACTERS.test(trimmed)) {
+  // Match the Worker helper's fail-closed contract before WHATWG parsing:
+  // source URLs are printable ASCII and must not contain characters that the
+  // parser would percent-encode or rewrite.
+  if (NON_PRINTABLE_OR_NON_ASCII_SOURCE_CHARACTERS.test(trimmed)) {
     throw new WorkerBuildNetworkError(
       envKey,
-      "value must not contain whitespace or control characters.",
+      "value must not contain control characters, whitespace, or non-ASCII characters.",
+    );
+  }
+  if (URL_REWRITE_SOURCE_CHARACTERS.test(trimmed)) {
+    throw new WorkerBuildNetworkError(
+      envKey,
+      "value must not contain characters that require URL encoding.",
     );
   }
   let parsed: URL;

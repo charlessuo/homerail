@@ -284,13 +284,12 @@ fi
 
 # Validate the public Worker build source contract and assemble Docker
 # arguments without evaluating input. Invalid values fail here, before Docker starts.
-LIVE_BUILD_NETWORK_ARGS=()
-homerail_worker_build_network_args LIVE_BUILD_NETWORK_ARGS
+homerail_worker_build_network_args
 echo "Building isolated worker image $HOMERAIL_WORKER_IMAGE"
 docker build \
   --label "$LIVE_RUN_LABEL=$RUN_KEY" \
   --label "org.homerail.live_slot=$LIVE_SLOT" \
-  ${LIVE_BUILD_NETWORK_ARGS[@]+"${LIVE_BUILD_NETWORK_ARGS[@]}"} \
+  ${HOMERAIL_WORKER_BUILD_NETWORK_ARGS[@]+"${HOMERAIL_WORKER_BUILD_NETWORK_ARGS[@]}"} \
   -t "$HOMERAIL_WORKER_IMAGE" \
   -f "$REPO_ROOT/homerail_worker/Dockerfile" \
   "$REPO_ROOT"

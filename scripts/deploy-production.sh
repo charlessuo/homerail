@@ -207,8 +207,7 @@ SHORT_REVISION="${REVISION:0:12}"
 WORKER_IMAGE="homerail-worker:production-$SHORT_REVISION"
 # Validate the public Worker build source contract and assemble Docker
 # arguments without evaluating input. Invalid values fail here, before Docker starts.
-WORKER_BUILD_NETWORK_ARGS=()
-homerail_worker_build_network_args WORKER_BUILD_NETWORK_ARGS
+homerail_worker_build_network_args
 echo "Building production Worker image $WORKER_IMAGE"
 docker build \
   --label "org.homerail.production_revision=$REVISION" \
@@ -221,7 +220,7 @@ docker build \
   --build-arg "HOMERAIL_WORKER_PROTOCOL_VERSION=$WORKER_CONTRACT_VERSION" \
   --build-arg "HOMERAIL_WORKER_VERSION=$WORKER_VERSION" \
   --build-arg "HOMERAIL_WORKER_IMAGE_REVISION=$REVISION" \
-  ${WORKER_BUILD_NETWORK_ARGS[@]+"${WORKER_BUILD_NETWORK_ARGS[@]}"} \
+  ${HOMERAIL_WORKER_BUILD_NETWORK_ARGS[@]+"${HOMERAIL_WORKER_BUILD_NETWORK_ARGS[@]}"} \
   -t "$WORKER_IMAGE" \
   -f "$SOURCE_ROOT/homerail_worker/Dockerfile" \
   "$SOURCE_ROOT"

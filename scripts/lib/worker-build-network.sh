@@ -22,8 +22,10 @@
 # when non-empty. Their values are never expanded into argv, inspected, or
 # logged; the Docker client/BuildKit proxy configuration remains authoritative.
 #
-# The helper only appends to a caller-provided argv array. It never evaluates
-# or executes validated input. Callers must use `set -euo pipefail`.
+# The helper populates the global HOMERAIL_WORKER_BUILD_NETWORK_ARGS argv
+# array. This avoids Bash 4.3 namerefs so the contract also works with the
+# Bash 3.2 runtime shipped by macOS. It never evaluates or executes validated
+# input. Callers must use `set -euo pipefail`.
 
 # homerail_worker_build_network_helper_path
 #
@@ -67,10 +69,10 @@ homerail_worker_build_network_normalize_source() {
   return 0
 }
 
-# homerail_worker_build_network_args ARRAY_NAME
+# homerail_worker_build_network_args
 #
 # Validates the public build source settings from the environment and appends
-# Docker build arguments to the caller's argv array named ARRAY_NAME:
+# Docker build arguments to the global HOMERAIL_WORKER_BUILD_NETWORK_ARGS array:
 #   --build-arg HOMERAIL_WORKER_BUILD_APT_MIRROR=<url>
 #   --build-arg HOMERAIL_WORKER_BUILD_APT_SECURITY_MIRROR=<url>
 #   --build-arg NPM_CONFIG_REGISTRY=<url>
@@ -78,7 +80,7 @@ homerail_worker_build_network_normalize_source() {
 # proxy variable. Returns 1 before any Docker invocation when a value is
 # invalid.
 homerail_worker_build_network_args() {
-  local -n _homerail_worker_build_network_args="$1"
+  HOMERAIL_WORKER_BUILD_NETWORK_ARGS=()
   local name normalized proxy_name
   for name in HOMERAIL_WORKER_BUILD_APT_MIRROR HOMERAIL_WORKER_BUILD_APT_SECURITY_MIRROR HOMERAIL_WORKER_BUILD_NPM_REGISTRY; do
     if ! normalized="$(homerail_worker_build_network_normalize_source "$name")"; then
@@ -86,15 +88,15 @@ homerail_worker_build_network_args() {
     fi
     if [ -n "$normalized" ]; then
       if [ "$name" = "HOMERAIL_WORKER_BUILD_NPM_REGISTRY" ]; then
-        _homerail_worker_build_network_args+=("--build-arg" "NPM_CONFIG_REGISTRY=$normalized")
+        HOMERAIL_WORKER_BUILD_NETWORK_ARGS+=("--build-arg" "NPM_CONFIG_REGISTRY=$normalized")
       else
-        _homerail_worker_build_network_args+=("--build-arg" "$name=$normalized")
+        HOMERAIL_WORKER_BUILD_NETWORK_ARGS+=("--build-arg" "$name=$normalized")
       fi
     fi
   done
   for proxy_name in HTTP_PROXY HTTPS_PROXY NO_PROXY http_proxy https_proxy no_proxy; do
     if [ -n "${!proxy_name-}" ]; then
-      _homerail_worker_build_network_args+=("--build-arg" "$proxy_name")
+      HOMERAIL_WORKER_BUILD_NETWORK_ARGS+=("--build-arg" "$proxy_name")
     fi
   done
   return 0
