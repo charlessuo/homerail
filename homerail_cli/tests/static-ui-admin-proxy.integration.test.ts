@@ -1201,7 +1201,9 @@ async function createRuntimeHarness(): Promise<RuntimeHarness> {
   const managerUrl = await listen(manager, "127.0.0.1");
   const httpsPort = await reservePort();
   const httpPort = await reservePort();
-  return { home, repoRoot, managerUrl, httpsPort, httpPort, received };
+  const harness = { home, repoRoot, managerUrl, httpsPort, httpPort, received };
+  runtimeHarnesses.push(harness);
+  return harness;
 }
 
 async function runUiStart(
