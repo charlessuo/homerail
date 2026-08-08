@@ -5,6 +5,7 @@ import * as https from "node:https";
 import * as net from "node:net";
 import * as os from "node:os";
 import * as path from "node:path";
+import { buildSync } from "esbuild";
 import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
 import { createProgram } from "../src/index.js";
 
@@ -820,16 +821,23 @@ async function waitUntil(check: () => Promise<boolean>): Promise<void> {
 describe("runtime UI Origin propagation through hr ui start", () => {
   afterAll(() => {
     if (sharedRuntimeRepoRoot) {
-      fs.rmSync(sharedRuntimeRepoRoot, { recursive: true, force: true });
+      fs.rmSync(sharedRuntimeRepoRoot, {
+        recursive: true,
+        force: true,
+        maxRetries: 5,
+        retryDelay: 100,
+      });
       sharedRuntimeRepoRoot = undefined;
     }
   });
 
-  afterEach(() => {
+  afterEach(async () => {
+    const stoppedPids: number[] = [];
     for (const harness of runtimeHarnesses.splice(0)) {
       for (const name of ["ui-https", "ui"] as const) {
         const pid = runtimePidFile(harness.home, name);
         if (pid === undefined) continue;
+        stoppedPids.push(pid);
         try {
           process.kill(-pid, "SIGTERM");
         } catch {
@@ -841,6 +849,7 @@ describe("runtime UI Origin propagation through hr ui start", () => {
         }
       }
     }
+    await Promise.all(stoppedPids.map((pid) => waitForRuntimePidExit(pid)));
   });
 
   it("propagates the explicit external Origin from flag, environment, and stored config into both static listeners", async () => {
@@ -1157,14 +1166,14 @@ function runtimeRepoRoot(): string {
     path.join(root, "homerail_cli", "package.json"),
     `${JSON.stringify({ name: "homerail-cli-runtime-test", private: true, type: "module" }, null, 2)}\n`,
   );
-  execFileSync(path.resolve("node_modules/esbuild/bin/esbuild"), [
-    path.resolve("src/static-ui-server.ts"),
-    "--bundle",
-    "--platform=node",
-    "--format=esm",
-    "--target=node20",
-    `--outfile=${path.join(root, "homerail_cli", "dist", "static-ui-server.js")}`,
-  ], { stdio: "pipe", timeout: 60_000 });
+  buildSync({
+    entryPoints: [path.resolve("src/static-ui-server.ts")],
+    bundle: true,
+    platform: "node",
+    format: "esm",
+    target: "node20",
+    outfile: path.join(root, "homerail_cli", "dist", "static-ui-server.js"),
+  });
   sharedRuntimeRepoRoot = root;
   return root;
 }
@@ -1192,7 +1201,9 @@ async function createRuntimeHarness(): Promise<RuntimeHarness> {
   const managerUrl = await listen(manager, "127.0.0.1");
   const httpsPort = await reservePort();
   const httpPort = await reservePort();
-  return { home, repoRoot, managerUrl, httpsPort, httpPort, received };
+  const harness = { home, repoRoot, managerUrl, httpsPort, httpPort, received };
+  runtimeHarnesses.push(harness);
+  return harness;
 }
 
 async function runUiStart(
