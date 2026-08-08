@@ -152,6 +152,11 @@ describe("resolveWorkerBuildNetwork", () => {
     "https://mirrors.example.com/<debian>",
     "https://mirrors.example.com/{debian}",
     "https://mirrors.example.com\\debian",
+    "https://mirrors.example.com/deb%ian",
+    "https://mirrors.example.com/deb|ian",
+    "https://mirrors.example.com/deb^ian",
+    "https://mirrors.example.com/deb[ian",
+    "https://mirrors.example.com/deb]ian",
   ];
 
   for (const value of invalidValues) {

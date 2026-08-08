@@ -53,7 +53,8 @@ export class WorkerBuildNetworkError extends Error {
 }
 
 const NON_PRINTABLE_OR_NON_ASCII_SOURCE_CHARACTERS = /[^\u0021-\u007e]/;
-const URL_REWRITE_SOURCE_CHARACTERS = /["<>`{}\\]/;
+const URL_REWRITE_SOURCE_CHARACTERS = /["%<>`^{}|\\]/;
+const URL_PATH_BRACKETS = /[\[\]]/;
 
 function normalizeTrailingSlashes(href: string): string {
   return href.replace(/\/+$/, "");
@@ -95,6 +96,14 @@ function resolveSourceUrl(envKey: string, raw: string | undefined): string | und
   }
   if (parsed.search || parsed.hash) {
     throw new WorkerBuildNetworkError(envKey, "value must not include a query or fragment.");
+  }
+  // Brackets are required around IPv6 hosts, but are not useful in public
+  // mirror paths and have varied normalization behavior across Node releases.
+  if (URL_PATH_BRACKETS.test(parsed.pathname)) {
+    throw new WorkerBuildNetworkError(
+      envKey,
+      "value must not contain path characters that require URL encoding.",
+    );
   }
   return normalizeTrailingSlashes(parsed.toString());
 }

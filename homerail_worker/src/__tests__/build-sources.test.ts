@@ -15,8 +15,8 @@ import { afterAll, describe, expect, it } from "vitest";
 
 const execFileAsync = promisify(execFile);
 
-const helperModuleUrl = new URL("../../scripts/configure-apt-sources.mjs", import.meta.url);
-const helperScriptPath = fileURLToPath(helperModuleUrl);
+const helperScriptUrl = new URL("../../scripts/configure-apt-sources.mjs", import.meta.url);
+const helperScriptPath = fileURLToPath(helperScriptUrl);
 const workerRoot = fileURLToPath(new URL("../..", import.meta.url));
 const repoRoot = fileURLToPath(new URL("../../..", import.meta.url));
 const dockerfile = readFileSync(new URL("../../Dockerfile", import.meta.url), "utf8")
@@ -47,7 +47,10 @@ interface BuildSourcesHelperModule {
   }) => number;
 }
 
-const helper = (await import(helperModuleUrl.href)) as BuildSourcesHelperModule;
+// The runtime-owned ESM helper intentionally ships without TypeScript declarations.
+// Keep the specifier relative so Vitest resolves it consistently on Windows and POSIX.
+// @ts-expect-error -- the interface below is the test-side contract for this JavaScript module.
+const helper = (await import("../../scripts/configure-apt-sources.mjs")) as BuildSourcesHelperModule;
 
 const DEBIAN_SOURCES_FIXTURE = [
   "Types: deb",
@@ -215,6 +218,11 @@ describe("Worker deb822 source override helper", () => {
       "https://mirror.example.com/deb ian",
       "https://mirror.example.com/debian\u0000",
       "https://mirror.example.com/<script>",
+      "https://mirror.example.com/deb%ian",
+      "https://mirror.example.com/deb|ian",
+      "https://mirror.example.com/deb^ian",
+      "https://mirror.example.com/deb[ian",
+      "https://mirror.example.com/deb]ian",
       "https://ex\u00e4mple.example.com/debian",
       "ftp://mirror.example.com/debian",
       "file:///etc/passwd",
@@ -370,6 +378,11 @@ describe("Worker deb822 source override helper", () => {
       "https://mirror.example.com/debian#fragment",
       "https://mirror.example.com/deb ian",
       "https://mirror.example.com/debian\u0000",
+      "https://mirror.example.com/deb%ian",
+      "https://mirror.example.com/deb|ian",
+      "https://mirror.example.com/deb^ian",
+      "https://mirror.example.com/deb[ian",
+      "https://mirror.example.com/deb]ian",
       "file:///etc/passwd",
     ];
     for (const value of invalidValues) {
@@ -538,6 +551,11 @@ describe("Worker build source environment-name CLI mode", () => {
       "https://mirror.example.com/debian#fragment",
       "https://mirror.example.com/deb ian",
       "https://mirror.example.com/<script>",
+      "https://mirror.example.com/deb%ian",
+      "https://mirror.example.com/deb|ian",
+      "https://mirror.example.com/deb^ian",
+      "https://mirror.example.com/deb[ian",
+      "https://mirror.example.com/deb]ian",
       "ftp://mirror.example.com/debian",
       "file:///etc/passwd",
       "not a url",

@@ -55,7 +55,7 @@ export function validateMirrorUrl(rawValue, key) {
   // Fail closed on characters the WHATWG URL parser would percent-encode or
   // rewrite (a backslash becomes a path separator in special schemes), so the
   // normalized output never silently differs from the operator's input.
-  if (/["<>`{}\\]/.test(rawValue)) {
+  if (/["%<>`^{}|\\]/.test(rawValue)) {
     throw new Error(`${key} must not contain characters that require URL encoding.`);
   }
   let parsed;
@@ -75,6 +75,11 @@ export function validateMirrorUrl(rawValue, key) {
   }
   if (parsed.search !== "" || parsed.hash !== "") {
     throw new Error(`${key} must not include a query or fragment.`);
+  }
+  // Preserve bracketed IPv6 hosts while rejecting brackets in mirror paths,
+  // whose normalization behavior can vary between Node releases.
+  if (/[\[\]]/.test(parsed.pathname)) {
+    throw new Error(`${key} must not contain path characters that require URL encoding.`);
   }
   return parsed.toString().replace(/\/+$/, "");
 }
