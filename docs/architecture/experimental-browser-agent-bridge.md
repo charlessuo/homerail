@@ -6,6 +6,8 @@ Scope: HomeRail core + HomeRail Desktop
 
 Decision date: 2026-08-09
 
+Tracking: [GitHub Epic #208](https://github.com/xiaotianfotos/homerail/issues/208)
+
 This document defines an opt-in browser-agent bridge for HomeRail. The bridge
 combines the experimental WebMCP page API with a narrowly scoped Electron/CDP
 observation layer, Manager-side policy, and HomeRail Artifacts. It deliberately
@@ -1028,7 +1030,7 @@ another issue's integration surface.
 | CAT-04 | `homerail` | Agent UI catalog API client and standalone read-only settings component/locales | CAT-01, CAT-03 |
 | SET-01 | `homerail` | Sole owner of `AgentSettingsPage.vue` integration: mount CAT-04/UI-03, isolate dormant MCP CRUD, update settings E2E | CAT-04, UI-03 |
 | AGENT-01 | `homerail` | Text Manager Agent adapter for stable contracts/meta-tools; policy routing, frozen per-turn context and outcome evidence | UI-05, ACT-01, OBS-02 |
-| LIVE-01 | `homerail` | GPT Live-only stable tool adapter; context/session/revision binding and structured `ui_evaluate_widget` text result | AGENT-01, OBS-03 |
+| LIVE-01 | `homerail` | GPT Live-only stable tool adapter; reuse #169 context/session/revision contract and #168 committed-outcome baseline; structured `ui_evaluate_widget` text result | AGENT-01, OBS-03, #169 |
 | SEC-01 | `homerail` | Black-box adversarial suite only: remote/other-user impersonation, proxy exposure, replay, malicious/mismatched catalog, stale navigation, oversized data, capture privacy and evaluator egress | DESK-04, ACT-01, OBS-03 |
 | QA-C1 | `homerail` | Core integration/evals for default-off/unsupported init, catalog, policy, actions, observation and Manager/Live adapters | SET-01, LIVE-01, SEC-01 |
 | QA-D1 | `homerail_desktop` | Real Desktop Electron E2E: enable restart, immediate disable/revocation, CDP lifecycle, navigation/detach, paired reconnect, masks/capture/inspect and voice showcase | DESK-04, OBS-D1, OBS-D2, QA-C1 |
