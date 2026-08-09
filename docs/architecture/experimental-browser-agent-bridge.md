@@ -16,10 +16,11 @@ serially. The detailed phases below are checklists inside those two tasks, not
 independent parallel Issues.
 
 This document defines an opt-in browser-agent bridge for HomeRail. The bridge
-combines the experimental WebMCP page API with a narrowly scoped Electron/CDP
-observation layer, Manager-side policy, and HomeRail Artifacts. It deliberately
-does not replace HomeRail's Generative UI, A2UI, DAG projection, or event
-channels.
+combines stable HomeRail UI contracts, a browser-neutral renderer transport,
+the experimental WebMCP page API when available, a narrowly scoped
+Electron/CDP observation layer, Manager-side policy, and HomeRail Artifacts.
+It deliberately does not replace HomeRail's Generative UI, A2UI, DAG
+projection, or event channels.
 
 ## Decision
 
@@ -40,12 +41,20 @@ The implementation must still probe capabilities at runtime. The WebMCP API,
 Chromium feature names, and CDP domain are experimental and may change without
 following Electron's compatibility guarantees.
 
+Native WebMCP support is therefore not a prerequisite for semantic HomeRail UI
+control. A separately authenticated renderer connection invokes the same six
+frozen application contracts over standard WebSocket/JSON. This path works in
+the Web deployment and remains available in Electron when its embedded
+Chromium lacks the page API or CDP domain. Native WebMCP is an optional page
+discovery/invocation adapter; it is not the product's compatibility boundary.
+
 ### Go, no-go, and deferred decisions
 
 | Area | Decision | Reason |
 | --- | --- | --- |
 | Experimental WebMCP toggle | Go | Electron 43 can enable and execute it; default-off and restart-required are acceptable. |
 | Dedicated `/ws/browser-tools` | Go | The existing `/ws/events` channel is a broadcast invalidation stream, not authenticated RPC. |
+| Browser-neutral renderer bridge | Go | The six frozen HomeRail contracts need only WebSocket, JSON, AbortController, and the existing UI controller; no vendor browser API is required. |
 | HomeRail UI tools | Go | Stable HomeRail state and actions can be wrapped without coordinate clicking. |
 | Widget/page screenshots | Go | Electron `capturePage()` and CDP screenshot APIs are available; images belong in Artifacts, not WS payloads. |
 | Widget runtime inspection | Go, bounded | Box, visibility, overflow, partial accessibility, and selected style facts are useful; unrestricted DOM/CDP is not. |
@@ -63,9 +72,10 @@ following Electron's compatibility guarantees.
 
 | Requested capability | Proposed implementation |
 | --- | --- |
-| Turn WebMCP on or off | One default-off experimental setting; enabling the Chromium page API requires an app restart. Policy sub-options separately allow discovery, observation, and actions. |
+| Turn browser-agent tools on or off | One default-off experimental setting. Web enable/disable is immediate; Desktop enable needs one restart to load the optional Chromium feature, while disable revokes both transports immediately. |
 | Show built-in MCP configuration | A read-only **MCP & Tool Providers** catalog generated from real HomeRail tool declarations and runtime presence. |
 | Add `/ws/browser-tools` | A versioned, authenticated Desktop-main-process-to-Manager RPC channel. |
+| Support the deployed Web UI and non-Chrome browsers | A separate ticket-authenticated `/ws/browser-tools/renderer` channel invokes only the frozen HomeRail contracts and binds every turn to the exact originating tab/navigation. |
 | Move Generative UI/DAG notifications to WebMCP | Do not migrate them. Keep canonical Generative UI/A2UI and `/ws/events`; expose selected UI observations and actions through the new bridge. |
 | Screenshot the UI or one widget | Desktop captures pixels; Manager stores a bounded, revision-bound browser-observation Artifact. |
 | Report widget details and quality | Combine the canonical semantic node, bounded runtime facts, partial accessibility data, screenshot, and a structured evaluation Artifact. |
@@ -102,6 +112,8 @@ plane.
   unsupported.
 - Let Desktop discover and invoke WebMCP tools without exposing Node.js or a
   generic JavaScript evaluator to the renderer or Manager.
+- Let the deployed Web UI expose the same semantic controls without depending
+  on Chrome, Edge, `document.modelContext`, or CDP.
 - Capture the whole HomeRail page or one stable widget as a bounded Artifact.
 - Describe rendered widget facts without reconstructing business semantics from
   the DOM.
@@ -125,7 +137,8 @@ plane.
 - Automatically rewriting a widget until a model says it looks good.
 - Enabling external MCP server execution from the existing dormant CRUD.
 - Operating arbitrary third-party web pages in the first release.
-- Requiring WebMCP for browser-only/mobile HomeRail clients.
+- Expanding compatibility beyond browsers capable of loading the existing
+  Agent UI build; the renderer bridge does not polyfill the application itself.
 
 ## Proposed architecture
 
@@ -136,8 +149,10 @@ flowchart LR
     subgraph UI["Agent UI renderer"]
       REX["Renderer executors\n(focus / expand)"]
       WAD["WebMCP adapter"]
+      RBR["Direct renderer bridge\n(WebSocket / JSON)"]
       A2["Canonical A2UI renderer"]
       REX --> WAD
+      REX --> RBR
       A2 --> REX
     end
 
@@ -151,12 +166,14 @@ flowchart LR
 
     subgraph MANAGER["HomeRail Manager"]
       WS["Authenticated /ws/browser-tools"]
+      RWS["Ticketed /ws/browser-tools/renderer"]
       DIR["Live page/tool registry"]
       ROUTER["Policy router + confirmation"]
       MEX["Manager executors\n(state / registered actions)"]
       ART["Browser observation Artifacts"]
       ADP["Manager and GPT Live tool adapters"]
       WS --> DIR
+      RWS --> DIR
       ADP --> ROUTER
       ROUTER --> MEX
       ROUTER --> DIR
@@ -168,6 +185,7 @@ flowchart LR
     CONTRACT --> ROUTER
     WAD <-->|"Chromium WebMCP"| CDP
     BC <-->|"browser-tools.v1"| WS
+    RBR <-->|"browser-renderer-tools.v1"| RWS
 
     EVT["/ws/events invalidations"] --> A2
     REST["REST canonical snapshots"] --> A2
@@ -181,12 +199,16 @@ flowchart LR
 2. Only Electron main attaches `webContents.debugger`; no remote debugging port
    is opened in production.
 3. The Desktop main process, not the renderer, owns `/ws/browser-tools`.
-4. Manager is the authorization and audit boundary. Desktop executes only a
+4. A Web page never receives the Desktop pairing credential. It uses the
+   separate `/ws/browser-tools/renderer` protocol with a single-use,
+   short-lived ticket obtained through the exact same-origin UI proxy.
+5. Manager is the authorization and audit boundary. Desktop and the renderer
+   execute only a
    fixed protocol allowlist.
-5. V1 canonical mutations are limited to registered Generative UI plugin
+6. V1 canonical mutations are limited to registered Generative UI plugin
    actions and pass through `PluginActionBus`. Other Workspace/DAG mutations
    remain out of scope until they have an equally explicit command broker.
-6. Tool descriptions, schemas, page outputs, screenshots, DOM facts, and
+7. Tool descriptions, schemas, page outputs, screenshots, DOM facts, and
    accessibility text are untrusted inputs.
 
 ### Why the Desktop main process is the bridge client
@@ -205,9 +227,10 @@ access URL. Browser Bridge must therefore use a separately reported and
 validated local control URL. It must never infer a loopback endpoint by
 rewriting the public URL.
 
-The first release is intentionally limited to the HomeRail Agent UI
-`webContents`. A future browser-hosted adapter may reuse the protocol, but is not
-part of this decision.
+The native CDP path remains limited to the HomeRail Agent UI `webContents`.
+The direct renderer path is part of the first release and is intentionally
+limited to the same HomeRail Agent UI and the same frozen contracts; it is not
+a general web-page automation bridge.
 
 ## Experimental feature lifecycle
 
@@ -217,17 +240,20 @@ Expose one user-facing switch:
 Experimental browser agent tools: Off | On
 ```
 
-Default is `Off`. Enabling requires a Desktop restart because the Chromium
+Default is `Off`. In the Web deployment, enable and disable are immediate. In
+Desktop, first-time enable requires a restart because the optional Chromium
 feature must be selected before `app.ready`. Disabling is immediate: restart is
 needed only to remove the already-loaded experimental Chromium feature from the
 process.
 
-The switch is Desktop-owned process configuration, not an ordinary renderer or
-Manager preference. If it is shown inside Agent Settings, the page writes it
-through one narrowly scoped preload IPC method whose sender is checked against
-the exact HomeRail window and origin. Desktop persists it in its own bounded
-configuration and applies it on the next launch; the renderer never receives a
-pairing credential, connection proof, or a generic settings/file IPC surface.
+In Desktop the switch is process configuration, not an ordinary renderer or
+Manager preference. Agent Settings writes it through one narrowly scoped
+preload IPC method whose sender is checked against the exact HomeRail window
+and origin. Desktop persists it in its own bounded configuration and applies
+the native feature choice on the next launch. In a Web-only UI the switch is a
+page preference and controls only the direct renderer path. Neither form ever
+exposes a pairing credential, ticket after use, connection proof, or a generic
+settings/file IPC surface.
 
 Runtime disable is a fail-closed state transition:
 
@@ -237,7 +263,7 @@ active
   -> unregister page tools / abort renderer registrations
   -> cancel safe in-flight work and mark uncertain mutations indeterminate
   -> invalidate catalog and page context
-  -> close /ws/browser-tools
+  -> close /ws/browser-tools and /ws/browser-tools/renderer
   -> detach webContents.debugger
   -> disabled_runtime (restart later unloads the Chromium feature)
 ```
@@ -275,15 +301,74 @@ Startup sequence:
    to the top frame, exact HomeRail origin, and exact application-owned contract;
    a formal compatibility fixture will make those browser prerequisites visible.
 6. Desktop connects to Manager with an authenticated `browser-tools.v1` hello.
-7. Agent UI registers tools only when `document.modelContext` exists and the
-   HomeRail feature is enabled.
-8. Any missing capability is reported as unavailable/unsupported, not treated
-   as a fatal Desktop initialization failure.
+7. When the experiment is enabled, Agent UI obtains a single-use renderer
+   ticket through its same-origin UI endpoint and connects to
+   `/ws/browser-tools/renderer` using only standard browser APIs.
+8. Agent UI additionally registers native page tools when
+   `document.modelContext` exists and the native capability probe succeeded.
+9. Any missing native capability is reported as unavailable/unsupported, not
+   treated as a fatal Desktop initialization failure. The direct renderer path
+   remains eligible.
 
 The formal compatibility test owns the exact feature-name matrix. The local
 probe succeeded with `WebMCP`; upstream Chrome documentation also refers to
 testing/DevTools support features. Production code must not accumulate guessed
 feature names.
+
+### Browser compatibility and fallback
+
+Capability detection is based on APIs, not the user-agent string:
+
+| Runtime | Semantic Manager/voice UI control | Native WebMCP projection | Electron capture/inspection |
+| --- | --- | --- | --- |
+| Electron with WebMCP CDP | Direct renderer bridge | Yes, after runtime probe | Yes |
+| Electron without WebMCP CDP | Direct renderer bridge | Unavailable, visible and non-fatal | Other supported CDP/Electron observation features only |
+| Chrome or Edge Web deployment | Direct renderer bridge | Optional when the page API exists | No |
+| Firefox or Safari Web deployment | Direct renderer bridge | No | No |
+| Browser unable to load the current Agent UI build | Unsupported | No | No |
+
+An unsupported native method is a terminal capability result for that Desktop
+process. Desktop detaches its debugger and does not repeatedly attach every
+service-health poll. Transient transport failures use bounded exponential
+backoff. Manager and settings distinguish an authenticated, complete catalog
+from a socket that merely opened.
+
+Every Manager, Worker, voice-stream, and Live turn freezes one explicit route:
+`renderer`, `desktop`, or `none`. A renderer route also freezes
+`connection_id`, `ui_session_id`, `tab_id`, and `navigation_id`. A stale or
+disconnected target fails closed; it never falls through to Desktop or another
+tab, even if only one other connection remains.
+
+## Browser renderer protocol v1
+
+The Web-compatible transport is deliberately separate from the Desktop
+pairing protocol:
+
+- Ticket endpoint: `/api/browser-tools/renderer-ticket`.
+- WebSocket endpoint: `/ws/browser-tools/renderer`.
+- The ticket is random, single-use, short-lived, cache-disabled, bound to the
+  exact Origin and page identity, and sent as the first WebSocket message. It
+  never appears in a URL or persistent browser storage.
+- The public/static UI proxy validates the browser-facing Host and Origin,
+  strips forwarding headers, and proxies only the exact renderer path. The
+  privileged Desktop endpoint remains loopback-only and is never exposed by
+  the Web proxy.
+- The renderer declares the exact six application-owned contract digests.
+  Arbitrary page tools and runtime schemas are rejected.
+- Invocation and result messages bind connection, navigation, contract,
+  deadline, size, and concurrency. Cancellation, navigation, timeout, and
+  disconnect are single-terminal-state operations; uncertain visible actions
+  are reported as indeterminate and are never replayed automatically.
+- Multiple tabs coexist in a connection directory. The page that originates a
+  turn supplies its server-issued opaque connection reference; Manager never
+  selects the latest, focused, or only remaining tab as an implicit fallback.
+
+This ticket proves that a page reached the trusted same-origin endpoint; it is
+not a replacement for user authentication. The current single-user deployment
+may use it behind the existing UI network boundary. A public multi-user
+deployment must first bind ticket issuance and turn targets to an authenticated
+principal (or a trusted reverse-proxy identity). Manager's control port must
+remain private in either topology.
 
 ## Browser Tools protocol v1
 
@@ -916,12 +1001,14 @@ clicking.
 2. When off or unsupported, HomeRail initialization, UI rendering, DAGs, and
    Live Voice behave as before.
 3. Production never opens a remote debugging port.
-4. Browser Bridge is served only on a local-control listener, verifies a
-   loopback socket peer, rejects proxy forwarding, and connects only after
-   mutual pairing proof; missing credentials fail closed.
+4. The privileged Desktop Bridge is served only on a local-control listener,
+   verifies a loopback socket peer, rejects proxy forwarding, and connects only
+   after mutual pairing proof; missing credentials fail closed. The browser
+   renderer bridge uses a separate exact same-origin proxy route and one-use
+   ticket and never accepts the Desktop credential.
 5. Manager never sends arbitrary JavaScript, selector, input event, or CDP
    method requests.
-6. Only allowlisted HomeRail origins are eligible in v1.
+6. Only allowlisted or exact same-origin HomeRail pages are eligible in v1.
 7. WebMCP registration requires an origin-isolated HomeRail document and an
    effective `tools` Permissions Policy; cross-origin frames are denied in v1.
 8. Origin, page, frame, navigation, catalog revision, page descriptor digest,
@@ -933,20 +1020,22 @@ clicking.
 11. V1 mutating actions are registered Generative UI plugin actions and use
    `PluginActionBus` revision, digest, effect, deadline, permission,
    confirmation, and idempotency controls.
-12. Mutations are not automatically replayed after timeout or disconnect.
-13. Tool output and observation content enter the model as untrusted data.
-14. Screenshot and inspection require trusted capture eligibility; sensitive
+12. Turns explicitly bind `renderer`, `desktop`, or `none`; stale renderer
+    targets never fall through to another tab or Desktop.
+13. Mutations are not automatically replayed after timeout or disconnect.
+14. Tool output and observation content enter the model as untrusted data.
+15. Screenshot and inspection require trusted capture eligibility; sensitive
     regions are masked or the request fails, and whole-page capture is disabled
     by default and separately confirmed.
-15. Screenshot and inspection Artifacts are bounded, access-controlled,
+16. Screenshot and inspection Artifacts are bounded, access-controlled,
     digest-addressed, and retained only as policy allows.
-16. Evaluation Artifact access is processor-specific and one-use; external
+17. Evaluation Artifact access is processor-specific and one-use; external
     egress, retention, and metered cost require separate policy and confirmation.
-17. Passwords, tokens, cookies, storage, hidden input values, and full raw DOM
+18. Passwords, tokens, cookies, storage, hidden input values, and full raw DOM
     are not part of the protocol.
-18. A successful user-visible mutation requires authoritative committed
+19. A successful user-visible mutation requires authoritative committed
     revision evidence.
-19. Audit events contain identity, policy decision, effect, timing, and outcome,
+20. Audit events contain identity, policy decision, effect, timing, and outcome,
     but no secrets or image bytes.
 
 ### DevTools interaction
@@ -967,7 +1056,8 @@ detach, Desktop must:
 | --- | --- |
 | Feature off at startup | No Chromium feature selection, debugger attach, page registration, WS bridge, or browser provider availability. |
 | Feature turned off at runtime | Immediately reject, unregister, cancel/mark indeterminate, invalidate, disconnect and detach; restart only unloads the Chromium feature. |
-| API/CDP unsupported | Report `unsupported`; preserve all normal HomeRail features. |
+| Native API/CDP unsupported | Report native `unsupported`; preserve all normal HomeRail features and keep the direct renderer path eligible. |
+| Renderer ticket/connection unavailable | Keep the UI usable; advertise no renderer tools for that exact turn and retry transport with bounded backoff. Never select another tab or Desktop implicitly. |
 | Agent UI origin rejected | Do not attach/advertise tools; record a safe diagnostic. |
 | Local control URL/pairing unavailable | Do not use the public Manager URL or loopback trust as fallback; show bridge unavailable/repair-required. |
 | Manager unavailable | Keep UI usable; no queued mutation replay on reconnect. |
@@ -1188,6 +1278,33 @@ repeatable Electron fixture should additionally drive the existing Worker turn
 verifier and `/api/browser-tools/invoke` in-process, so CI covers the authorized
 HTTP adapter without depending on model choice or latency and without adding a
 test-only HTTP backdoor.
+
+## Web deployment compatibility evidence — 2026-08-09
+
+The browser-neutral path was exercised against the production Agent UI build,
+the production static UI proxy, a real isolated Manager, and the normal Host
+Manager tool adapter. The committed `scripts/qa-browser-renderer-e2e.mjs`
+fixture starts the isolated Manager and accepts invocations only over local
+process IPC; it does not add a test HTTP route to the product.
+
+| Check | Result |
+| --- | --- |
+| Default-off Web startup | Pass — the UI loaded normally and Manager had no renderer connection before the user enabled the experiment. |
+| Google Chrome 151 | Pass — the renderer authenticated with the complete six-tool catalog; one `ui_open_surface` call resolved `Web Renderer E2E DAG` to `web-renderer-e2e-run`, opened the DAG graph, and `ui_get_state`/`ui_close_surface` observed and closed that exact surface. |
+| Mozilla Firefox 147 | Pass — `document.modelContext` was absent, while the same direct renderer flow opened, observed, and closed the exact DAG graph. This verifies that native WebMCP and a Google browser are not prerequisites. |
+| Two-tab isolation | Pass — two tabs received different connection identities; invoking the first changed only the first tab. No latest/focused-tab selection was used. |
+| Reload invalidation | Pass — reload produced a new navigation and connection identity; invocation through the old identity failed closed and did not move to the other tab or Desktop transport. |
+| Immediate disable | Pass — changing the shared Web preference to Off disconnected both tabs and removed renderer authority without a process restart. |
+| Browser diagnostics | Pass — Chrome reported no page errors and only the expected application WebSocket connection message. Firefox completed without a native WebMCP object. |
+| Teardown | Pass — browsers, Manager, static UI, test ports, and the isolated HomeRail home were stopped or removed; normal user state was never used. |
+
+Safari/WebKit remains covered by the standard-API contract and deterministic
+bridge tests, not by a real Safari run on this Linux host. The product claim is
+therefore deliberately limited: the renderer bridge has no Chrome-only API,
+but each officially supported browser baseline still needs release CI or a
+platform smoke test. Public multi-user deployment also remains blocked on real
+login or trusted-proxy principal binding; same-origin tickets alone are not
+user authentication.
 
 ## Delivery completion gates
 

@@ -2,17 +2,34 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { Bot, Loader2 } from 'lucide-vue-next'
 import { useI18n } from 'vue-i18n'
+import { useUiStore } from '@/stores/ui-store'
 
 const { t } = useI18n()
+const uiStore = useUiStore()
 const status = ref<DesktopBrowserToolsStatus | null>(null)
-const bridgeAvailable = ref(false)
+const desktopManaged = ref(false)
 const switching = ref(false)
 const localError = ref('')
 let removeListener: (() => void) | null = null
+let desktopStatusRevision = 0
 
 const statusKey = computed(() => {
-  if (localError.value || status.value?.error) return 'error'
-  return status.value?.state ?? 'disabled'
+  if (localError.value || uiStore.browserToolsRuntimeStatus.error) return 'error'
+  return uiStore.browserToolsRuntimeStatus.state
+})
+
+const enabled = computed(() => desktopManaged.value
+  ? Boolean(status.value?.enabled)
+  : uiStore.webBrowserToolsEnabled)
+
+const nativeStatusKey = computed(() => {
+  if (!desktopManaged.value || !status.value?.enabled) return null
+  if (!status.value.supported || status.value.state === 'unavailable') return 'native-unavailable'
+  if (status.value.error || status.value.state === 'error') return 'native-error'
+  if (status.value.state === 'restart-required') return 'restart-required'
+  if (status.value.state === 'starting') return 'native-starting'
+  if (status.value.state === 'connected') return 'native-connected'
+  return null
 })
 
 function desktopBridge(): HomeRailDesktopBridge | null {
@@ -21,11 +38,16 @@ function desktopBridge(): HomeRailDesktopBridge | null {
 
 async function toggle(): Promise<void> {
   const bridge = desktopBridge()
-  if (!bridge?.setBrowserToolsEnabled || switching.value || !status.value) return
+  if (switching.value) return
+  if (!desktopManaged.value) {
+    uiStore.setWebBrowserToolsEnabled(!uiStore.webBrowserToolsEnabled)
+    return
+  }
+  if (!bridge?.setBrowserToolsEnabled || !status.value) return
   switching.value = true
   localError.value = ''
   try {
-    status.value = await bridge.setBrowserToolsEnabled(!status.value.enabled)
+    status.value = await bridge.setBrowserToolsEnabled(!enabled.value)
   } catch (error) {
     localError.value = error instanceof Error ? error.message : String(error)
   } finally {
@@ -35,23 +57,28 @@ async function toggle(): Promise<void> {
 
 onMounted(() => {
   const bridge = desktopBridge()
-  bridgeAvailable.value = Boolean(
+  desktopManaged.value = Boolean(
     bridge?.browserToolsStatus && bridge?.setBrowserToolsEnabled,
   )
-  if (!bridgeAvailable.value || !bridge?.browserToolsStatus) return
+  if (!desktopManaged.value || !bridge?.browserToolsStatus) return
+  const initialStatusRevision = desktopStatusRevision
   removeListener = bridge.onBrowserToolsStatus?.((nextStatus) => {
+    desktopStatusRevision += 1
     status.value = nextStatus
   }) ?? null
   void bridge.browserToolsStatus()
     .then((nextStatus) => {
-      status.value = nextStatus
+      if (desktopStatusRevision === initialStatusRevision) status.value = nextStatus
     })
     .catch((error) => {
-      localError.value = error instanceof Error ? error.message : String(error)
+      if (desktopStatusRevision === initialStatusRevision) {
+        localError.value = error instanceof Error ? error.message : String(error)
+      }
     })
 })
 
 onBeforeUnmount(() => {
+  desktopStatusRevision += 1
   removeListener?.()
   removeListener = null
 })
@@ -59,7 +86,6 @@ onBeforeUnmount(() => {
 
 <template>
   <div
-    v-if="bridgeAvailable"
     class="rounded-2xl border border-[var(--hr-settings-divider)] bg-[var(--hr-settings-card)] p-5"
     data-testid="desktop-browser-tools-settings"
   >
@@ -86,17 +112,23 @@ onBeforeUnmount(() => {
             {{ t('settings.experimental.browserTools.description') }}
           </p>
           <p
-            v-if="status || localError"
             class="mt-2 text-xs leading-5"
             :class="statusKey === 'error' || statusKey === 'unavailable'
               ? 'text-[var(--hr-danger)]'
-              : statusKey === 'connected'
+              : ['direct', 'direct-native', 'native-only'].includes(statusKey)
                 ? 'text-[var(--hr-success)]'
                 : 'text-[var(--hr-text-3)]'"
             data-testid="desktop-browser-tools-state"
           >
             {{ t(`settings.experimental.browserTools.state.${statusKey}`) }}
-            <span v-if="localError || status?.error">：{{ localError || status?.error }}</span>
+            <span v-if="localError || uiStore.browserToolsRuntimeStatus.error">：{{ localError || uiStore.browserToolsRuntimeStatus.error }}</span>
+          </p>
+          <p
+            v-if="nativeStatusKey"
+            class="mt-1 text-xs leading-5 text-[var(--hr-text-3)]"
+            data-testid="desktop-browser-tools-native-state"
+          >
+            {{ t(`settings.experimental.browserTools.state.${nativeStatusKey}`) }}
           </p>
         </div>
       </div>
@@ -104,26 +136,26 @@ onBeforeUnmount(() => {
       <div class="inline-flex flex-shrink-0 items-center gap-3 sm:pl-4">
         <span
           class="text-xs font-medium"
-          :class="status?.enabled ? 'text-[var(--hr-info)]' : 'text-[var(--hr-text-3)]'"
+          :class="enabled ? 'text-[var(--hr-info)]' : 'text-[var(--hr-text-3)]'"
         >
-          {{ status?.enabled ? t('settings.actions.enabled') : t('settings.actions.disabled') }}
+          {{ enabled ? t('settings.actions.enabled') : t('settings.actions.disabled') }}
         </span>
         <button
           data-testid="desktop-browser-tools-toggle"
           type="button"
           role="switch"
           class="relative h-7 w-12 rounded-full border transition disabled:cursor-not-allowed disabled:opacity-60"
-          :class="status?.enabled
+          :class="enabled
             ? 'border-[var(--hr-info-border)] bg-[var(--hr-info)]'
             : 'border-[var(--hr-border-strong)] bg-[var(--hr-surface-2)]'"
-          :aria-checked="status?.enabled ?? false"
+          :aria-checked="enabled"
           :aria-label="t('settings.experimental.browserTools.title')"
-          :disabled="switching || !status"
+          :disabled="switching || (desktopManaged && !status)"
           @click="toggle"
         >
           <span
             class="absolute left-1 top-1 h-5 w-5 rounded-full bg-white shadow transition-transform"
-            :class="status?.enabled ? 'translate-x-5' : 'translate-x-0'"
+            :class="enabled ? 'translate-x-5' : 'translate-x-0'"
           />
         </button>
       </div>

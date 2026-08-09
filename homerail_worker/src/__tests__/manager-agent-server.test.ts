@@ -1368,7 +1368,10 @@ describe("manager-agent server", () => {
     const managerPort = await listen(managerApi);
     vi.stubEnv("MANAGER_REST_URL", `http://127.0.0.1:${managerPort}/api`);
     try {
-      const tool = requireManagerTool(createManagerTools(managerToolState(), "chat"), "ui_open_surface");
+      const tool = requireManagerTool(createManagerTools({
+        ...managerToolState(),
+        browserToolsTransport: "desktop",
+      }, "chat"), "ui_open_surface");
       const result = await tool.handler({ surface: "dag_status", query: "review" });
       expect(observed).toEqual({
         name: "ui_open_surface",
@@ -1378,6 +1381,12 @@ describe("manager-agent server", () => {
     } finally {
       await close(managerApi);
     }
+  });
+
+  it("does not expose Worker UI tools without a signed browser route", () => {
+    const names = createManagerTools(managerToolState(), "chat").map((tool) => tool.name);
+    expect(names).not.toContain("ui_get_state");
+    expect(names).not.toContain("ui_open_surface");
   });
 
   it("maps Worker supervisor tools to actor-only Manager REST requests", async () => {

@@ -26,12 +26,21 @@ export interface HomeRailUiState {
 
 export interface HomeRailUiSurfaceController {
   getState(): HomeRailUiState
-  listDagRuns(): Promise<BrowserToolRunSummary[]>
-  openDagStatus(runId?: string): Promise<void>
+  listDagRuns(signal?: AbortSignal): Promise<BrowserToolRunSummary[]>
+  openDagStatus(
+    runId?: string,
+    signal?: AbortSignal,
+    onActionCommitted?: () => void,
+  ): Promise<void>
   closeDagStatus(): void
   describeWidget(target: HomeRailUiWidgetTarget): HomeRailUiWidgetDescriptor
   focusWidget(target: HomeRailUiWidgetTarget): HomeRailUiWidgetDescriptor
   setWidgetExpanded(target: HomeRailUiWidgetTarget, expanded: boolean): HomeRailUiWidgetDescriptor
+}
+
+export interface HomeRailUiToolExecutionContext {
+  signal?: AbortSignal
+  onActionCommitted?: () => void
 }
 
 export interface OpenSurfaceInput {
@@ -84,6 +93,7 @@ export async function executeHomeRailUiTool(
   name: string,
   rawInput: unknown,
   controller: HomeRailUiSurfaceController,
+  context: HomeRailUiToolExecutionContext = {},
 ): Promise<Record<string, unknown>> {
   if (
     name !== 'ui_get_state'
@@ -96,6 +106,12 @@ export async function executeHomeRailUiTool(
     throw new Error(`Unknown HomeRail UI tool: ${name}`)
   }
   const input = validateHomeRailUiToolInput(name, rawInput)
+  const throwIfAborted = (): void => {
+    if (context.signal?.aborted) {
+      throw new DOMException('HomeRail UI tool was cancelled', 'AbortError')
+    }
+  }
+  throwIfAborted()
   if (name === 'ui_get_state') {
     return { ok: true, state: controller.getState() }
   }
@@ -114,8 +130,18 @@ export async function executeHomeRailUiTool(
     const widget = name === 'ui_describe_widget'
       ? controller.describeWidget(target)
       : name === 'ui_focus_widget'
-        ? controller.focusWidget(target)
-        : controller.setWidgetExpanded(target, input.expanded as boolean)
+        ? (() => {
+            throwIfAborted()
+            const focused = controller.focusWidget(target)
+            context.onActionCommitted?.()
+            return focused
+          })()
+        : (() => {
+            throwIfAborted()
+            const expanded = controller.setWidgetExpanded(target, input.expanded as boolean)
+            context.onActionCommitted?.()
+            return expanded
+          })()
     return { ok: true, widget }
   }
 
@@ -124,11 +150,19 @@ export async function executeHomeRailUiTool(
   if (name === 'ui_open_surface') {
     const entityId = input.entity_id as string | undefined
     const query = input.query as string | undefined
-    const runId = resolveDagRunTarget(await controller.listDagRuns(), {
+    const runs = context.signal
+      ? await controller.listDagRuns(context.signal)
+      : await controller.listDagRuns()
+    const runId = resolveDagRunTarget(runs, {
       entity_id: entityId,
       query,
     })
-    await controller.openDagStatus(runId)
+    throwIfAborted()
+    if (context.signal || context.onActionCommitted) {
+      await controller.openDagStatus(runId, context.signal, context.onActionCommitted)
+    } else {
+      await controller.openDagStatus(runId)
+    }
     return {
       ok: true,
       surface,
@@ -138,7 +172,9 @@ export async function executeHomeRailUiTool(
   }
 
   if (name === 'ui_close_surface') {
+    throwIfAborted()
     controller.closeDagStatus()
+    context.onActionCommitted?.()
     return { ok: true, surface, state: controller.getState() }
   }
 
@@ -161,15 +197,23 @@ export function createAgentUiSurfaceController(
         ...widgetSnapshot,
       }
     },
-    async listDagRuns() {
-      const response = await http.get<{ runs?: BrowserToolRunSummary[] }>('/api/runs')
+    async listDagRuns(signal) {
+      const response = await http.get<{ runs?: BrowserToolRunSummary[] }>(
+        '/api/runs',
+        signal ? { signal } : undefined,
+      )
       return Array.isArray(response.data?.runs) ? response.data.runs : []
     },
-    openDagStatus: async (runId) => {
+    openDagStatus: async (runId, signal, onActionCommitted) => {
       // Settings replaces the main surface in the root view. Leave it only
       // after the target opens, so success always corresponds to a visible
       // overlay while a failed direct-page invocation remains atomic.
-      await store.openRuntimeOverlay(runId)
+      if (signal || onActionCommitted) {
+        await store.openRuntimeOverlay(runId, signal, onActionCommitted)
+      } else {
+        await store.openRuntimeOverlay(runId)
+      }
+      if (signal?.aborted) throw new DOMException('HomeRail UI tool was cancelled', 'AbortError')
       store.settingsPageOpen = false
     },
     closeDagStatus: () => store.closeRuntimeOverlay(),

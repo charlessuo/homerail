@@ -12,6 +12,7 @@ import {
 } from "homerail-protocol";
 
 import { getBrowserToolsBroker } from "./browser-tools-websocket.js";
+import { getBrowserRendererToolsBroker } from "./browser-renderer-tools-websocket.js";
 
 const DAG_TOOL_PATTERN = /(?:^|_)(?:dag|run|orchestration|change|approval|trigger)(?:_|$)/;
 const UI_TOOL_NAMES = new Set<string>(HOMERAIL_UI_TOOL_NAMES);
@@ -112,7 +113,10 @@ export function toolProviderRoutesHandler(
     return true;
   }
   const catalog = buildToolProviderCatalog({
-    browserConnected: getBrowserToolsBroker()?.connected() ?? false,
+    browserConnected: Boolean(
+      getBrowserToolsBroker()?.ready()
+      || getBrowserRendererToolsBroker()?.connected(),
+    ),
   });
   res.writeHead(200, { "Content-Type": "application/json" });
   res.end(JSON.stringify({ success: true, data: catalog }));

@@ -67,6 +67,10 @@ import { executeCredentialBrokerCall } from "../runtime/credential-broker.js";
 import { setupBrowserToolsWebSocket } from "./browser-tools-websocket.js";
 import { toolProviderRoutesHandler } from "./tool-providers.js";
 import { browserUiToolRoutesHandler } from "./browser-ui-tools.js";
+import {
+  browserRendererTicketRoutesHandler,
+  setupBrowserRendererToolsWebSocket,
+} from "./browser-renderer-tools-websocket.js";
 
 function json(res: http.ServerResponse, status: number, body: unknown) {
   res.writeHead(status, { "Content-Type": "application/json" });
@@ -401,6 +405,10 @@ export function createServer(
       return;
     }
 
+    if (browserRendererTicketRoutesHandler(req, res)) {
+      return;
+    }
+
     if (browserUiToolRoutesHandler(req, res)) {
       return;
     }
@@ -560,6 +568,7 @@ export function createServer(
   setupNodeWebSocket(server, nodeWebsocketOptions);
   setupEventWebSocket(server);
   setupBrowserToolsWebSocket(server, { authToken: browserToolsAuthToken });
+  setupBrowserRendererToolsWebSocket(server, { trustPolicy: pluginHttpTrust });
   setupVoiceRealtimeWebSocket(server);
   setupCodexLiveVoiceWebSocket(server, {
     trustPolicy: pluginHttpTrust,

@@ -1,7 +1,11 @@
 import { describe, expect, it } from 'vitest'
 import {
   authorizeAdminProxyRequest,
+  hardenBrowserRendererProxyHeaders,
+  isAllowedGeneralUiWebSocketProxyPath,
   isProtectedApiMutation,
+  trustedBrowserRendererTicketProxyFetchSite,
+  trustedBrowserRendererWebSocketProxyFetchSite,
   trustedWebSocketProxyFetchSite,
 } from './admin-proxy-trust'
 
@@ -63,5 +67,91 @@ describe('Vite Manager mutation proxy trust', () => {
       host: '127.0.0.1:19194',
       origin: 'https://evil.example',
     })).toBeUndefined()
+  })
+
+  it('authorizes only the exact renderer bridge WebSocket path', () => {
+    const request = {
+      protocol: 'http' as const,
+      host: '127.0.0.1:19192',
+      origin: 'http://127.0.0.1:19192',
+    }
+    expect(trustedBrowserRendererWebSocketProxyFetchSite(
+      '/ws/browser-tools/renderer',
+      request,
+    )).toBe('same-origin')
+    expect(trustedBrowserRendererWebSocketProxyFetchSite(
+      '/ws/browser-tools/renderer-evil',
+      request,
+    )).toBeUndefined()
+    expect(trustedBrowserRendererWebSocketProxyFetchSite(
+      '/ws/browser-tools/renderer?ticket=must-not-be-forwarded',
+      request,
+    )).toBeUndefined()
+    expect(trustedBrowserRendererWebSocketProxyFetchSite(
+      '/ws/events',
+      request,
+    )).toBeUndefined()
+    expect(trustedBrowserRendererWebSocketProxyFetchSite(
+      '/ws/browser-tools/renderer',
+      { ...request, origin: 'https://evil.example' },
+    )).toBeUndefined()
+  })
+
+  it('restores proxy trust only for an exact renderer ticket POST', () => {
+    const request = {
+      protocol: 'http' as const,
+      host: '127.0.0.1:19192',
+      origin: 'http://127.0.0.1:19192',
+      secFetchSite: 'same-origin',
+    }
+    expect(trustedBrowserRendererTicketProxyFetchSite(
+      'POST',
+      '/api/browser-tools/renderer-ticket',
+      request,
+    )).toBe('same-origin')
+    for (const [method, path] of [
+      ['GET', '/api/browser-tools/renderer-ticket'],
+      ['POST', '/api/browser-tools/renderer-ticket?leak=1'],
+      ['POST', '/api/browser-tools/renderer-ticket/extra'],
+      ['POST', '/api/other'],
+    ]) {
+      expect(trustedBrowserRendererTicketProxyFetchSite(method, path, request)).toBeUndefined()
+    }
+    expect(trustedBrowserRendererTicketProxyFetchSite(
+      'POST',
+      '/api/browser-tools/renderer-ticket',
+      { ...request, origin: 'https://evil.example' },
+    )).toBeUndefined()
+  })
+
+  it('strips forwarding claims before asserting the verified proxy hop', () => {
+    const removeHeader = vi.fn()
+    const setHeader = vi.fn()
+    hardenBrowserRendererProxyHeaders({ removeHeader, setHeader }, 'same-origin')
+
+    expect(removeHeader.mock.calls.map(([name]) => name)).toEqual([
+      'forwarded',
+      'x-forwarded-for',
+      'x-forwarded-host',
+      'x-forwarded-proto',
+    ])
+    expect(setHeader).toHaveBeenCalledWith('sec-fetch-site', 'same-origin')
+  })
+
+  it('proxies only the two public UI WebSocket routes through the general path', () => {
+    expect(isAllowedGeneralUiWebSocketProxyPath('/ws')).toBe(true)
+    expect(isAllowedGeneralUiWebSocketProxyPath('/ws/events')).toBe(true)
+    for (const path of [
+      '/ws/',
+      '/ws?ticket=forbidden',
+      '/ws/events?cursor=forbidden',
+      '/ws/browser-tools',
+      '/ws/browser-tools/renderer',
+      '/ws/browser-tools/renderer/',
+      '/ws/browser-tools/renderer-evil',
+      '/ws/unknown',
+    ]) {
+      expect(isAllowedGeneralUiWebSocketProxyPath(path)).toBe(false)
+    }
   })
 })

@@ -157,8 +157,14 @@ function normalizeTokenUsage(tokenUsage?: BackendTokenUsage): DAGTaskNode['token
 // API Functions
 // ============================================================================
 
-export async function getDagStatus(dagRunId: string): Promise<DAGExecution | null> {
-  const res = await http.get<any>(`/api/dag-status/${dagRunId}`)
+export async function getDagStatus(
+  dagRunId: string,
+  signal?: AbortSignal,
+): Promise<DAGExecution | null> {
+  const res = await http.get<any>(
+    `/api/dag-status/${dagRunId}`,
+    signal ? { signal } : undefined,
+  )
   // http client 已解包外层 { success, data } → res 就是 API body
   if (res.success === false || !res.data) {
     return null

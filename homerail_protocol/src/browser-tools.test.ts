@@ -8,10 +8,35 @@ import {
   browserPageToolDescriptorDigest,
   homeRailUiToolContract,
   uiToolContractDigest,
+  validateBrowserToolsTurnBinding,
   validateHomeRailUiToolInput,
 } from "./browser-tools.js";
 
 describe("browser tools contracts", () => {
+  it("requires an explicit fail-closed turn transport", () => {
+    expect(validateBrowserToolsTurnBinding(undefined, undefined)).toEqual({
+      browser_tools_transport: "none",
+      browser_tools_target: null,
+    });
+    expect(validateBrowserToolsTurnBinding("desktop", undefined)).toEqual({
+      browser_tools_transport: "desktop",
+      browser_tools_target: null,
+    });
+    const target = {
+      connection_id: "connection-a",
+      ui_session_id: "ui-a",
+      tab_id: "tab-a",
+      navigation_id: "navigation-a",
+    };
+    expect(validateBrowserToolsTurnBinding("renderer", target)).toEqual({
+      browser_tools_transport: "renderer",
+      browser_tools_target: target,
+    });
+    expect(() => validateBrowserToolsTurnBinding("renderer", undefined)).toThrow(/connection/);
+    expect(() => validateBrowserToolsTurnBinding("desktop", target)).toThrow(/forbidden/);
+    expect(() => validateBrowserToolsTurnBinding("latest", undefined)).toThrow(/none, desktop, or renderer/);
+  });
+
   it("publishes a small stable page-tool catalog", () => {
     expect(BROWSER_TOOLS_PROTOCOL_VERSION).toBe(1);
     expect(HOMERAIL_UI_TOOL_CONTRACTS.map((contract) => contract.name)).toEqual([

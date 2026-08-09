@@ -6,11 +6,17 @@ import { WebSocket } from "ws";
 import {
   BROWSER_TOOLS_CAPABILITIES,
   BROWSER_TOOLS_PROTOCOL_VERSION,
+  HOMERAIL_UI_TOOL_NAMES,
   browserPageToolDescriptorDigest,
   homeRailUiToolContract,
+  type HomeRailUiToolName,
 } from "homerail-protocol";
 
-import { BrowserToolsBroker } from "../src/server/browser-tools-websocket.js";
+import {
+  BrowserToolsBroker,
+  setupBrowserToolsWebSocket,
+} from "../src/server/browser-tools-websocket.js";
+import { invokeHomeRailBrowserUiTool } from "../src/server/browser-ui-tools.js";
 
 let server: Server | null = null;
 let socket: WebSocket | null = null;
@@ -76,8 +82,11 @@ async function connectAuthenticated(url: string, token: string): Promise<WebSock
   return client;
 }
 
-function catalogEntry(overrides: Record<string, unknown> = {}): Record<string, unknown> {
-  const contract = homeRailUiToolContract("ui_open_surface")!;
+function catalogEntryFor(
+  name: HomeRailUiToolName,
+  overrides: Record<string, unknown> = {},
+): Record<string, unknown> {
+  const contract = homeRailUiToolContract(name)!;
   const descriptor = {
     name: contract.name,
     description: contract.description,
@@ -85,7 +94,7 @@ function catalogEntry(overrides: Record<string, unknown> = {}): Record<string, u
     frame_id: "frame-main",
     origin: "http://127.0.0.1:19192",
     navigation_id: "navigation-1",
-    read_only: false,
+    read_only: contract.effect === "read",
     untrusted_content: true,
     ...overrides,
   };
@@ -102,6 +111,10 @@ function catalogEntry(overrides: Record<string, unknown> = {}): Record<string, u
       untrusted_content: boolean;
     }),
   };
+}
+
+function catalogEntry(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return catalogEntryFor("ui_open_surface", overrides);
 }
 
 afterEach(async () => {
@@ -320,6 +333,68 @@ describe("Browser Tools WebSocket", () => {
       surface: "dag_status",
       run_id: "run-001",
     })).rejects.toThrow("unsupported field: run_id");
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(invocationCount).toBe(0);
+  });
+
+  it("publishes the Desktop catalog atomically and fails closed after it degrades", async () => {
+    const token = "browser-tools-atomic-catalog-secret";
+    server = createServer();
+    const broker = setupBrowserToolsWebSocket(server, { authToken: token });
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("missing test server address");
+    const client = await connectAuthenticated(
+      `ws://127.0.0.1:${address.port}/ws/browser-tools`,
+      token,
+    );
+
+    expect(broker.ready()).toBe(false);
+    client.send(JSON.stringify({
+      type: "page.catalog",
+      version: BROWSER_TOOLS_PROTOCOL_VERSION,
+      page_id: "page-empty",
+      tools: [],
+    }));
+    await waitFor(() => broker.status().page_id === "page-empty");
+    expect(broker.ready()).toBe(false);
+
+    client.send(JSON.stringify({
+      type: "page.catalog",
+      version: BROWSER_TOOLS_PROTOCOL_VERSION,
+      page_id: "page-partial",
+      tools: [catalogEntryFor("ui_get_state")],
+    }));
+    await waitFor(() => (broker.status().tools as string[]).length === 1);
+    expect(broker.ready()).toBe(false);
+    expect(broker.status().tools).toEqual(["ui_get_state"]);
+
+    client.send(JSON.stringify({
+      type: "page.catalog",
+      version: BROWSER_TOOLS_PROTOCOL_VERSION,
+      page_id: "page-complete",
+      tools: HOMERAIL_UI_TOOL_NAMES.map((name) => catalogEntryFor(name)),
+    }));
+    await waitFor(() => broker.ready());
+    expect(broker.status().tools).toEqual([...HOMERAIL_UI_TOOL_NAMES].sort());
+
+    let invocationCount = 0;
+    client.on("message", (raw) => {
+      const message = JSON.parse(raw.toString()) as Record<string, unknown>;
+      if (message.type === "tool.invoke") invocationCount += 1;
+    });
+    client.send(JSON.stringify({
+      type: "page.catalog",
+      version: BROWSER_TOOLS_PROTOCOL_VERSION,
+      page_id: "page-degraded",
+      tools: [catalogEntryFor("ui_get_state")],
+    }));
+    await waitFor(() => broker.status().page_id === "page-degraded" && !broker.ready());
+
+    await expect(invokeHomeRailBrowserUiTool("ui_get_state", {}, {
+      browser_tools_transport: "desktop",
+    })).rejects.toThrow("Desktop Browser Tools catalog is unavailable");
     await new Promise((resolve) => setTimeout(resolve, 20));
     expect(invocationCount).toBe(0);
   });

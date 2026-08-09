@@ -13,6 +13,9 @@ export const BROWSER_TOOLS_PROTOCOL_VERSION = 1 as const;
 export const BROWSER_TOOLS_MAX_MESSAGE_BYTES = 128 * 1024;
 export const BROWSER_TOOLS_MAX_RESULT_BYTES = 64 * 1024;
 export const BROWSER_TOOLS_DEFAULT_TIMEOUT_MS = 10_000;
+export const BROWSER_RENDERER_TOOLS_TICKET_TTL_MS = 60_000;
+export const BROWSER_RENDERER_TOOLS_TICKET_PATH = "/api/browser-tools/renderer-ticket";
+export const BROWSER_RENDERER_TOOLS_WS_PATH = "/ws/browser-tools/renderer";
 
 export const HOMERAIL_UI_SURFACES = ["dag_status"] as const;
 export type HomeRailUiSurface = (typeof HOMERAIL_UI_SURFACES)[number];
@@ -376,3 +379,188 @@ export type BrowserToolsManagerMessage =
   | BrowserToolsAuthChallengeMessage
   | BrowserToolsReadyMessage
   | BrowserToolsInvokeMessage;
+
+/**
+ * Browser-hosted renderer transport for the same frozen HomeRail UI contracts.
+ *
+ * This is intentionally separate from the Electron/CDP transport above. A Web
+ * page authenticates with a short-lived one-use ticket as its first WebSocket
+ * message and never receives the Desktop pairing secret.
+ */
+export interface BrowserRendererTargetV1 {
+  ui_session_id: string;
+  tab_id: string;
+  navigation_id: string;
+}
+
+export interface BrowserRendererConnectionRefV1 extends BrowserRendererTargetV1 {
+  connection_id: string;
+}
+
+/**
+ * The renderer route is request-owned and frozen for the lifetime of a turn.
+ * `none` is deliberately explicit: an absent/stale Web renderer must never
+ * fall through to an unrelated Electron Desktop connection.
+ */
+export type BrowserToolsTurnTransportV1 = "none" | "desktop" | "renderer";
+
+export interface BrowserToolsTurnBindingV1 {
+  browser_tools_transport: BrowserToolsTurnTransportV1;
+  browser_tools_target: BrowserRendererConnectionRefV1 | null;
+}
+
+function browserRendererId(value: unknown, field: string): string {
+  if (typeof value !== "string") throw new Error(`${field} must be a string`);
+  const normalized = value.trim();
+  if (!normalized || normalized.length > 128 || /[\u0000-\u001f\u007f]/.test(normalized)) {
+    throw new Error(`${field} must contain 1-128 printable characters`);
+  }
+  return normalized;
+}
+
+function exactBrowserRendererRecord(
+  value: unknown,
+  fields: readonly string[],
+  label: string,
+): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(`${label} must be an object`);
+  }
+  const record = value as Record<string, unknown>;
+  const actual = Object.keys(record).sort();
+  const expected = [...fields].sort();
+  if (actual.length !== expected.length || actual.some((field, index) => field !== expected[index])) {
+    throw new Error(`${label} must contain only ${expected.join(", ")}`);
+  }
+  return record;
+}
+
+export function validateBrowserRendererTarget(value: unknown): BrowserRendererTargetV1 {
+  const record = exactBrowserRendererRecord(
+    value,
+    ["ui_session_id", "tab_id", "navigation_id"],
+    "browser renderer target",
+  );
+  return {
+    ui_session_id: browserRendererId(record.ui_session_id, "ui_session_id"),
+    tab_id: browserRendererId(record.tab_id, "tab_id"),
+    navigation_id: browserRendererId(record.navigation_id, "navigation_id"),
+  };
+}
+
+export function validateBrowserRendererConnectionRef(value: unknown): BrowserRendererConnectionRefV1 {
+  const record = exactBrowserRendererRecord(
+    value,
+    ["connection_id", "ui_session_id", "tab_id", "navigation_id"],
+    "browser renderer connection",
+  );
+  return {
+    connection_id: browserRendererId(record.connection_id, "connection_id"),
+    ui_session_id: browserRendererId(record.ui_session_id, "ui_session_id"),
+    tab_id: browserRendererId(record.tab_id, "tab_id"),
+    navigation_id: browserRendererId(record.navigation_id, "navigation_id"),
+  };
+}
+
+export function validateBrowserToolsTurnBinding(
+  rawTransport: unknown,
+  rawTarget: unknown,
+): BrowserToolsTurnBindingV1 {
+  const browser_tools_transport = rawTransport === undefined
+    ? "none"
+    : rawTransport;
+  if (
+    browser_tools_transport !== "none"
+    && browser_tools_transport !== "desktop"
+    && browser_tools_transport !== "renderer"
+  ) throw new Error("browser_tools_transport must be none, desktop, or renderer");
+  if (browser_tools_transport === "renderer") {
+    return {
+      browser_tools_transport,
+      browser_tools_target: validateBrowserRendererConnectionRef(rawTarget),
+    };
+  }
+  if (rawTarget !== undefined && rawTarget !== null) {
+    throw new Error(`browser_tools_target is forbidden for ${browser_tools_transport} transport`);
+  }
+  return { browser_tools_transport, browser_tools_target: null };
+}
+
+export interface BrowserRendererContractBindingV1 {
+  name: HomeRailUiToolName;
+  contract_digest: string;
+}
+
+export interface BrowserRendererTicketRequestV1 extends BrowserRendererTargetV1 {}
+
+export interface BrowserRendererTicketResponseV1 {
+  ticket: string;
+  expires_in_ms: typeof BROWSER_RENDERER_TOOLS_TICKET_TTL_MS;
+}
+
+export interface BrowserRendererAuthTicketMessageV1 extends BrowserRendererTargetV1 {
+  type: "auth.ticket";
+  version: typeof BROWSER_TOOLS_PROTOCOL_VERSION;
+  ticket: string;
+  contracts: BrowserRendererContractBindingV1[];
+}
+
+export interface BrowserRendererInvokeMessageV1 {
+  type: "tool.invoke";
+  version: typeof BROWSER_TOOLS_PROTOCOL_VERSION;
+  call_id: string;
+  connection_id: string;
+  navigation_id: string;
+  tool_name: HomeRailUiToolName;
+  input: Record<string, unknown>;
+  contract_digest: string;
+  deadline_ms: number;
+}
+
+export interface BrowserRendererReadyMessageV1 extends BrowserRendererConnectionRefV1 {
+  type: "auth.ready";
+  version: typeof BROWSER_TOOLS_PROTOCOL_VERSION;
+  capabilities: BrowserToolsCapability[];
+  max_message_bytes: typeof BROWSER_TOOLS_MAX_MESSAGE_BYTES;
+  max_result_bytes: typeof BROWSER_TOOLS_MAX_RESULT_BYTES;
+  max_concurrent_calls: number;
+}
+
+export interface BrowserRendererCancelMessageV1 {
+  type: "tool.cancel";
+  version: typeof BROWSER_TOOLS_PROTOCOL_VERSION;
+  call_id: string;
+  connection_id: string;
+  navigation_id: string;
+  reason: "timeout" | "cancelled" | "connection_closed" | "navigation_invalidated";
+}
+
+export interface BrowserRendererResultMessageV1 {
+  type: "tool.result";
+  version: typeof BROWSER_TOOLS_PROTOCOL_VERSION;
+  call_id: string;
+  connection_id: string;
+  navigation_id: string;
+  ok: boolean;
+  terminal_state: "completed" | "failed" | "cancelled" | "indeterminate";
+  output?: unknown;
+  error?: string;
+}
+
+export interface BrowserRendererInvalidatedMessageV1 {
+  type: "page.invalidated";
+  version: typeof BROWSER_TOOLS_PROTOCOL_VERSION;
+  connection_id: string;
+  navigation_id: string;
+  reason: "navigation" | "reload" | "feature_disabled" | "window_closed";
+}
+
+export type BrowserRendererClientMessageV1 =
+  | BrowserRendererAuthTicketMessageV1
+  | BrowserRendererResultMessageV1
+  | BrowserRendererInvalidatedMessageV1;
+
+export type BrowserRendererManagerMessageV1 =
+  | BrowserRendererReadyMessageV1
+  | BrowserRendererInvokeMessageV1
+  | BrowserRendererCancelMessageV1;

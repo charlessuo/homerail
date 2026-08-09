@@ -94,10 +94,17 @@
       "state": {
         "disabled": "已關閉，沒有註冊或連接任何頁面工具。",
         "restart-required": "已啟用；請重新啟動一次 HomeRail Desktop，以啟用 Chromium WebMCP 執行環境。",
-        "starting": "正在啟動本機 Browser Tools 通道…",
+        "starting": "正在連接安全的頁面直連通道…",
+        "direct": "頁面直連已連接，Manager 和 Live Voice 可以操作目前的精確頁面。",
+        "direct-native": "頁面直連與原生 WebMCP 都已在目前頁面啟用。",
+        "native-only": "原生 WebMCP 已啟用，但 Manager 頁面直連目前無法使用。",
         "connected": "已連接，AI 可以使用可信的 HomeRail 介面動作。",
-        "unavailable": "目前 Desktop 執行環境不支援 WebMCP。",
-        "error": "Browser Tools 啟動失敗"
+        "unavailable": "目前頁面沒有可用的 Browser Tools 通道。",
+        "error": "Browser Tools 啟動失敗",
+        "native-starting": "原生 Chromium WebMCP：正在探索 6 個可信頁面工具…",
+        "native-connected": "原生 Chromium WebMCP：已連接完整的 6 工具目錄。",
+        "native-unavailable": "原生 Chromium WebMCP 無法使用；頁面直連仍可繼續操作目前頁面。",
+        "native-error": "原生 Chromium WebMCP 啟動失敗；頁面直連與它彼此獨立。"
       }
     },
     "liveVoiceImmersive": {

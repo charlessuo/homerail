@@ -33,6 +33,83 @@ afterEach(async () => {
 });
 
 describe("static Agent UI mutation proxy", () => {
+  it("proxies only the exact same-origin browser renderer WebSocket route", async () => {
+    const upgradedPaths: string[] = [];
+    const manager = http.createServer();
+    manager.on("upgrade", (req, socket) => {
+      trackSocket(socket);
+      upgradedPaths.push(req.url || "");
+      socket.write(
+        "HTTP/1.1 101 Switching Protocols\r\n" +
+        "Connection: Upgrade\r\n" +
+        "Upgrade: websocket\r\n\r\n",
+      );
+      socket.end();
+    });
+    servers.push(manager);
+    const managerUrl = await listen(manager, "127.0.0.1");
+    const uiPort = await reservePort();
+    const uiOrigin = `http://127.0.0.1:${uiPort}`;
+    await startStaticUi({ port: uiPort, host: "127.0.0.1", origin: uiOrigin, managerUrl });
+
+    expect(await websocketUpgrade(uiPort, "/ws/browser-tools/renderer", uiOrigin))
+      .toContain("HTTP/1.1 101 Switching Protocols");
+    expect(upgradedPaths).toEqual(["/ws/browser-tools/renderer"]);
+
+    for (const candidate of [
+      "/ws/browser-tools",
+      "/ws/browser-tools/renderer/",
+      "/ws/browser-tools/renderer.evil",
+      "/ws/browser-tools/renderer?ticket=forbidden",
+      "/ws/unknown",
+    ]) {
+      await websocketUpgrade(uiPort, candidate, uiOrigin).catch(() => "");
+    }
+    expect(upgradedPaths).toEqual(["/ws/browser-tools/renderer"]);
+  }, 15_000);
+
+  it("guards renderer tickets at the browser-facing Origin and rewrites proxy trust headers", async () => {
+    let managerHits = 0;
+    let observedHeaders: http.IncomingHttpHeaders = {};
+    const manager = http.createServer((req, res) => {
+      managerHits += 1;
+      observedHeaders = req.headers;
+      req.resume();
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end("{}");
+    });
+    servers.push(manager);
+    const managerUrl = await listen(manager, "127.0.0.1");
+    const uiPort = await reservePort();
+    const uiOrigin = `http://127.0.0.1:${uiPort}`;
+    await startStaticUi({ port: uiPort, host: "127.0.0.1", origin: uiOrigin, managerUrl });
+
+    expect((await fetch(`${uiOrigin}/api/browser-tools/renderer-ticket`, {
+      method: "POST",
+      headers: {
+        Origin: "https://evil.example",
+        "Content-Type": "application/json",
+      },
+      body: "{}",
+    })).status).toBe(403);
+    expect(managerHits).toBe(0);
+
+    expect((await fetch(`${uiOrigin}/api/browser-tools/renderer-ticket`, {
+      method: "POST",
+      headers: {
+        Origin: uiOrigin,
+        "Content-Type": "application/json",
+        Forwarded: "for=192.0.2.1;host=evil.example",
+        "X-Forwarded-Host": "evil.example",
+      },
+      body: "{}",
+    })).status).toBe(200);
+    expect(managerHits).toBe(1);
+    expect(observedHeaders.forwarded).toBeUndefined();
+    expect(observedHeaders["x-forwarded-host"]).toBeUndefined();
+    expect(observedHeaders["sec-fetch-site"]).toBe("same-origin");
+  }, 15_000);
+
   it("proxies the Manager event WebSocket used by runtime environment updates", async () => {
     let upgradedPath = "";
     const manager = http.createServer();

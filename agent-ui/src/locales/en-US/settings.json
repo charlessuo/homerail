@@ -94,10 +94,17 @@
       "state": {
         "disabled": "Off. No page tools are registered or connected.",
         "restart-required": "Enabled. Restart HomeRail Desktop once to activate the Chromium WebMCP runtime.",
-        "starting": "Starting the local Browser Tools bridge…",
+        "starting": "Connecting the secure renderer bridge…",
+        "direct": "Direct bridge connected. Manager and Live Voice can operate this exact page.",
+        "direct-native": "Direct bridge and native WebMCP are both active on this page.",
+        "native-only": "Native WebMCP is active, but the direct Manager bridge is unavailable.",
         "connected": "Connected. Trusted HomeRail interface actions are available to AI.",
-        "unavailable": "WebMCP is unavailable in this Desktop runtime.",
-        "error": "Browser Tools could not start"
+        "unavailable": "No Browser Tools transport is available for this page.",
+        "error": "Browser Tools could not start",
+        "native-starting": "Native Chromium WebMCP: discovering the six trusted page tools…",
+        "native-connected": "Native Chromium WebMCP: connected with the complete six-tool catalog.",
+        "native-unavailable": "Native Chromium WebMCP is unavailable; the direct bridge can still operate this page.",
+        "native-error": "Native Chromium WebMCP failed; the direct bridge is kept separate."
       }
     },
     "liveVoiceImmersive": {

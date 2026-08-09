@@ -106,9 +106,22 @@ export class BrowserToolsBroker {
     return Boolean(this.client?.socket.readyState === WebSocket.OPEN);
   }
 
+  /** All six frozen contracts are projected atomically for Agent use. */
+  ready(): boolean {
+    const client = this.client;
+    return Boolean(
+      client
+      && client.socket.readyState === WebSocket.OPEN
+      && client.pageId
+      && client.tools.size === HOMERAIL_UI_TOOL_NAMES.length
+      && HOMERAIL_UI_TOOL_NAMES.every((name) => client.tools.has(name)),
+    );
+  }
+
   status(): Record<string, unknown> {
     return {
       connected: this.connected(),
+      ready: this.ready(),
       connection_id: this.client?.connectionId ?? null,
       desktop_instance_id: this.client?.desktopInstanceId ?? null,
       page_id: this.client?.pageId ?? null,

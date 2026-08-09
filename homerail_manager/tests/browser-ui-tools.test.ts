@@ -21,11 +21,15 @@ afterEach(async () => {
 async function routeRequest(input: {
   authorize: boolean;
   body: Record<string, unknown>;
-  invoke?: (name: HomeRailUiToolName, value: unknown) => Promise<unknown>;
+  browser_tools_transport?: "none" | "desktop" | "renderer";
+  browser_tools_target?: Record<string, string>;
+  invoke?: (name: HomeRailUiToolName, value: unknown, options?: unknown) => Promise<unknown>;
 }): Promise<{ status: number; body: Record<string, unknown> }> {
   server = createServer((req, res) => {
     browserUiToolRoutesHandler(req, res, {
       authorize: () => input.authorize,
+      browser_tools_transport: input.browser_tools_transport,
+      browser_tools_target: input.browser_tools_target as never,
       invoke: input.invoke as never,
     });
   });
@@ -86,7 +90,11 @@ describe("Manager browser UI target resolution", () => {
       status: 200,
       body: { success: true, data: { result: { ok: true } } },
     });
-    expect(invoke).toHaveBeenCalledWith("ui_get_state", {});
+    expect(invoke).toHaveBeenCalledWith("ui_get_state", {}, expect.objectContaining({
+      browser_tools_transport: "none",
+      browser_tools_target: null,
+      signal: expect.any(AbortSignal),
+    }));
   });
 
   it("rejects schema-invalid input at the HTTP boundary before invoking the broker", async () => {
@@ -127,6 +135,36 @@ describe("Manager browser UI target resolution", () => {
       status: 200,
       body: { success: true, data: { result: { ok: true } } },
     });
-    expect(invoke).toHaveBeenCalledWith("ui_set_widget_expanded", input);
+    expect(invoke).toHaveBeenCalledWith("ui_set_widget_expanded", input, expect.objectContaining({
+      browser_tools_transport: "none",
+      browser_tools_target: null,
+      signal: expect.any(AbortSignal),
+    }));
+  });
+
+  it("uses only the signed route context and never a target from the request body", async () => {
+    const invoke = vi.fn(async () => ({ ok: true }));
+    const signedTarget = {
+      connection_id: "connection-signed",
+      ui_session_id: "ui-signed",
+      tab_id: "tab-signed",
+      navigation_id: "navigation-signed",
+    };
+    const response = await routeRequest({
+      authorize: true,
+      browser_tools_transport: "renderer",
+      browser_tools_target: signedTarget,
+      body: {
+        name: "ui_get_state",
+        input: {},
+        browser_tools_transport: "desktop",
+      },
+      invoke,
+    });
+    expect(response.status).toBe(200);
+    expect(invoke).toHaveBeenCalledWith("ui_get_state", {}, expect.objectContaining({
+      browser_tools_transport: "renderer",
+      browser_tools_target: signedTarget,
+    }));
   });
 });

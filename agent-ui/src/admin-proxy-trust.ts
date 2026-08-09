@@ -60,6 +60,67 @@ export function trustedWebSocketProxyFetchSite(
   return authorizeAdminProxyRequest(request).allowed ? 'same-origin' : undefined
 }
 
+export function trustedBrowserRendererWebSocketProxyFetchSite(
+  urlValue: string | undefined,
+  request: UiMutationRequestTrust,
+): 'same-origin' | undefined {
+  try {
+    const url = new URL(urlValue || '/', 'http://localhost')
+    if (url.pathname !== '/ws/browser-tools/renderer' || url.search) {
+      return undefined
+    }
+  } catch {
+    return undefined
+  }
+  return trustedWebSocketProxyFetchSite(request)
+}
+
+export function trustedBrowserRendererTicketProxyFetchSite(
+  methodValue: string | undefined,
+  urlValue: string | undefined,
+  request: UiMutationRequestTrust,
+): 'same-origin' | undefined {
+  if ((methodValue || 'GET').toUpperCase() !== 'POST') return undefined
+  try {
+    const url = new URL(urlValue || '/', 'http://localhost')
+    if (url.pathname !== '/api/browser-tools/renderer-ticket' || url.search) {
+      return undefined
+    }
+  } catch {
+    return undefined
+  }
+  return trustedWebSocketProxyFetchSite(request)
+}
+
+export function isAllowedGeneralUiWebSocketProxyPath(urlValue: string | undefined): boolean {
+  try {
+    const url = new URL(urlValue || '/', 'http://localhost')
+    return !url.search && (url.pathname === '/ws' || url.pathname === '/ws/events')
+  } catch {
+    return false
+  }
+}
+
+export interface BrowserRendererProxyHeaders {
+  removeHeader(name: string): void
+  setHeader(name: string, value: string): void
+}
+
+export function hardenBrowserRendererProxyHeaders(
+  headers: BrowserRendererProxyHeaders,
+  fetchSite: 'same-origin',
+): void {
+  for (const name of [
+    'forwarded',
+    'x-forwarded-for',
+    'x-forwarded-host',
+    'x-forwarded-proto',
+  ]) {
+    headers.removeHeader(name)
+  }
+  headers.setHeader('sec-fetch-site', fetchSite)
+}
+
 function singleHeader(value: string | string[] | undefined): string | undefined {
   if (typeof value !== 'string' || !value || /[\r\n]/.test(value)) return undefined
   return value

@@ -400,14 +400,21 @@ export const useAgentStore = defineStore('agent', () => {
     if (projectId) void fetchManagerSessions()
   }
 
-  async function switchToRun(runId: string, projectId?: string): Promise<boolean> {
+  async function switchToRun(
+    runId: string,
+    projectId?: string,
+    signal?: AbortSignal,
+    onActionCommitted?: () => void,
+  ): Promise<boolean> {
     let dag: DAGExecution | null = null
     try {
       const { getDagStatus } = await import('@/api/services/dag-api')
-      dag = await getDagStatus(runId)
+      dag = await getDagStatus(runId, signal)
     } catch { /* caller decides whether a missing run is user-visible */ }
+    if (signal?.aborted) throw new DOMException('HomeRail UI tool was cancelled', 'AbortError')
     if (!dag) return false
 
+    onActionCommitted?.()
     currentRunId.value = runId
     if (projectId) managerProjectId.value = projectId
     managerSessionId.value = null
@@ -421,12 +428,23 @@ export const useAgentStore = defineStore('agent', () => {
     return true
   }
 
-  async function openRuntimeOverlay(runId?: string): Promise<void> {
+  async function openRuntimeOverlay(
+    runId?: string,
+    signal?: AbortSignal,
+    onActionCommitted?: () => void,
+  ): Promise<void> {
     const normalizedRunId = runId?.trim() || null
     if (normalizedRunId) {
-      const found = await switchToRun(normalizedRunId)
+      const found = await switchToRun(
+        normalizedRunId,
+        undefined,
+        signal,
+        onActionCommitted,
+      )
       if (!found) throw new Error(`DAG run not found: ${normalizedRunId}`)
     }
+    if (signal?.aborted) throw new DOMException('HomeRail UI tool was cancelled', 'AbortError')
+    if (!normalizedRunId) onActionCommitted?.()
     runtimeOverlayRunId.value = normalizedRunId
     runtimeOverlayView.value = normalizedRunId ? 'dag_graph' : 'run_list'
     runtimeOverlayOpen.value = true

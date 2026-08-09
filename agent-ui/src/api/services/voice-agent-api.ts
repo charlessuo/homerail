@@ -1,4 +1,5 @@
 import { http } from '@/api/clients/http-client'
+import { currentBrowserToolsTurnBinding } from '@/browser-tools/browser-renderer-bridge'
 import type { BaseResponse } from '@/api/types/common.types'
 import type {
   ManagerAgentHarness,
@@ -441,6 +442,7 @@ export async function sendVoiceTurn(
     text,
     project_id: projectId || null,
     selected_node_id: selectedNodeId || null,
+    ...currentBrowserToolsTurnBinding(),
   }, { timeout: NO_HTTP_TIMEOUT }) as unknown as Promise<BaseResponse<VoiceTurnResponse>>
 }
 
@@ -518,6 +520,7 @@ export async function streamVoiceTurn(
         text,
         project_id: projectId || null,
         selected_node_id: selectedNodeId || null,
+        ...currentBrowserToolsTurnBinding(),
       }),
       signal,
     })
@@ -539,6 +542,7 @@ export async function confirmVoiceTask(
   void managerModelName
   return http.post<BaseResponse<VoiceConfirmResponse>>(`/api/voice-agent/sessions/${sessionId}/confirm`, {
     confirmation_id: confirmationId || null,
+    ...currentBrowserToolsTurnBinding(),
   }, { timeout: NO_HTTP_TIMEOUT }) as unknown as Promise<BaseResponse<VoiceConfirmResponse>>
 }
 
@@ -557,6 +561,7 @@ export async function streamConfirmVoiceTask(
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       confirmation_id: confirmationId || null,
+      ...currentBrowserToolsTurnBinding(),
     }),
     signal,
   })
