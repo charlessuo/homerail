@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, watch } from 'vue'
+import { computed, onMounted, onUnmounted, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { useAgentStore } from '@/stores/agent-store'
 import AgentChatPanel from '@/components/agent/AgentChatPanel.vue'
@@ -13,12 +13,15 @@ import DagRuntimeOverlay from '@/components/agent/dag-runtime/DagRuntimeOverlay.
 import OnboardingWizard from '@/components/agent/onboarding/OnboardingWizard.vue'
 import { useOnboardingStatus } from '@/composables/useOnboardingStatus'
 import { PanelRightClose, PanelRightOpen } from 'lucide-vue-next'
+import { startHomeRailBrowserTools } from '@/browser-tools/webmcp-adapter'
+import { createAgentUiSurfaceController } from '@/browser-tools/ui-surface-controller'
 
 const store = useAgentStore()
 const route = useRoute()
 const textModeEnabled = flagEnabled(import.meta.env.VITE_HOMERAIL_ENABLE_TEXT_MODE)
 const voiceOnlyMode = !textModeEnabled
 const { status: onboardingStatus, refresh: refreshOnboarding } = useOnboardingStatus()
+let stopBrowserTools: (() => void) | null = null
 
 const captureRunId = computed(() => {
   const raw = route.query.captureRun
@@ -43,12 +46,18 @@ function isMobileVoiceEntry(): boolean {
 }
 
 onMounted(async () => {
+  stopBrowserTools = await startHomeRailBrowserTools(createAgentUiSurfaceController(store))
   if (voiceOnlyMode || isMobileVoiceEntry()) store.voiceCockpitOpen = true
   // 检测配置状态，缺配则弹出新手引导
   await refreshOnboarding()
   if (!captureMode.value && onboardingStatus.value.needsOnboarding && !store.onboardingDismissed) {
     store.openOnboarding()
   }
+})
+
+onUnmounted(() => {
+  stopBrowserTools?.()
+  stopBrowserTools = null
 })
 
 async function closeOnboarding(): Promise<void> {
@@ -86,9 +95,9 @@ watch(
 
   <DagRuntimeOverlay
     v-else-if="store.runtimeOverlayOpen"
-    :initial-run-id="captureRunId ?? undefined"
+    :initial-run-id="captureRunId ?? store.runtimeOverlayRunId ?? undefined"
     :capture-mode="captureMode"
-    @close="store.runtimeOverlayOpen = false"
+    @close="store.closeRuntimeOverlay()"
   />
 
   <div v-else-if="textModeEnabled" class="agent-shell relative flex h-screen overflow-hidden bg-[var(--hr-bg)] p-4 text-[var(--hr-text-1)]">
@@ -100,7 +109,7 @@ watch(
         show-runtime
         @select-voice="store.voiceCockpitOpen = true"
         @open-settings="store.settingsPageOpen = true"
-        @open-runtime="store.runtimeOverlayOpen = true"
+        @open-runtime="store.openRuntimeOverlay()"
       >
         <template #right>
           <DagResourceStatusPill />

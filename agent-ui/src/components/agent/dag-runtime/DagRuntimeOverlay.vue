@@ -177,9 +177,22 @@ let runLoadSequence = 0
 function selectRun(runId: string): void {
   selectedRunId.value = runId
   view.value = 'dag_graph'
+  store.setRuntimeOverlayState('dag_graph', runId)
   focusedNodeId.value = null
   selectedNodeId.value = null
   const sequence = ++runLoadSequence
+  if (store.currentRunId === runId && store.dagExecution?.dag_run_id === runId && store.nodes.length > 0) {
+    initNodeFocus()
+    void nextTick().then(() => {
+      if (sequence !== runLoadSequence || selectedRunId.value !== runId) return
+      if (props.captureMode) {
+        physicsPaused.value = true
+        canvasRef.value?.fitCanvasGraph()
+        canvasRef.value?.freezeLayout()
+      }
+    })
+    return
+  }
   void loadSelectedRun(runId, sequence)
 }
 
@@ -192,6 +205,7 @@ async function loadSelectedRun(runId: string, sequence: number): Promise<void> {
     // selected.
     selectedRunId.value = null
     view.value = 'run_list'
+    store.setRuntimeOverlayState('run_list')
     await refreshRuns()
     return
   }
@@ -308,6 +322,7 @@ function progressiveExit(): void {
   } else if (view.value === 'dag_graph') {
     view.value = 'run_list'
     selectedRunId.value = null
+    store.setRuntimeOverlayState('run_list')
     void refreshRuns()
   } else {
     emit('close')

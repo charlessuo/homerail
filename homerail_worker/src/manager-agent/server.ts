@@ -658,6 +658,17 @@ export function createManagerTools(state: {
     throw new Error("Plugin Context failed validation or digest verification in Worker Manager Agent");
   }
   const tools: DagToolDefinition[] = [
+    ...(["ui_get_state", "ui_open_surface", "ui_close_surface"] as const).map((name) => ({
+      ...managerAgentToolSpec(name),
+      async handler(args: Record<string, unknown>) {
+        const body = await requestManager("/browser-tools/invoke", {
+          method: "POST",
+          body: JSON.stringify({ name, input: args }),
+        });
+        const data = managerData(body);
+        return { content: [{ type: "text" as const, text: short(data.result ?? null) }] };
+      },
+    })),
     {
       name: "list_projects",
       description: "List projects known by the HomeRail Manager.",

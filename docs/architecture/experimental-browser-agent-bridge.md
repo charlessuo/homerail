@@ -1,12 +1,19 @@
 # Experimental Browser Agent Bridge
 
-Status: feasibility accepted as **Partial Go**; implementation not started
+Status: feasibility accepted as **Partial Go**; first vertical slice implemented
 
 Scope: HomeRail core + HomeRail Desktop
 
 Decision date: 2026-08-09
 
-Tracking: [GitHub Epic #208](https://github.com/xiaotianfotos/homerail/issues/208)
+Tracking:
+
+- HomeRail core: [xiaotianfotos/homerail#208](https://github.com/xiaotianfotos/homerail/issues/208)
+- Electron Desktop: [xiaotianfotos/homerail_desktop#50](https://github.com/xiaotianfotos/homerail_desktop/issues/50)
+
+Delivery uses two repository-sized tasks and two pull requests, implemented
+serially. The detailed phases below are checklists inside those two tasks, not
+independent parallel Issues.
 
 This document defines an opt-in browser-agent bridge for HomeRail. The bridge
 combines the experimental WebMCP page API with a narrowly scoped Electron/CDP
@@ -48,7 +55,7 @@ following Electron's compatibility guarantees.
 | Replace A2UI/Generative UI with WebMCP | No-go | HomeRail's canonical document owns durability/revisions, A2UI owns declarative presentation, and WebMCP owns page-local callable actions. |
 | Replace DAG events with WebMCP | No-go | WebMCP is not a state log, server-push protocol, replay mechanism, or recovery channel. |
 | Expose arbitrary JavaScript or CDP commands | No-go | It would grant browser-debugger authority far beyond the product use case. |
-| Unhide the existing external MCP editor | No-go for this Epic | Its CRUD exists, but configured servers are not wired into the Agent runtime and its runtime status is synthetic. |
+| Unhide the existing external MCP editor | No-go for this delivery | Its CRUD exists, but configured servers are not wired into the Agent runtime and its runtime status is synthetic. |
 | Arbitrary third-party browsing | Deferred | Desktop currently loads HomeRail UI and opens external links in the system browser. Multi-tab/origin policy needs a separate spike. |
 | Directly inject every dynamic page tool into GPT Live | Deferred | OpenAI supports tool updates, but HomeRail's current Live runtime freezes a tool digest and reconnects on schema change; navigation-driven churn needs an explicit design. |
 
@@ -63,6 +70,8 @@ following Electron's compatibility guarantees.
 | Screenshot the UI or one widget | Desktop captures pixels; Manager stores a bounded, revision-bound browser-observation Artifact. |
 | Report widget details and quality | Combine the canonical semantic node, bounded runtime facts, partial accessibility data, screenshot, and a structured evaluation Artifact. |
 | Let GPT Live operate the UI | Project a small stable set of application-owned function tools into the existing Live runtime; route mutations through HomeRail permissions and confirmation. |
+| Open one DAG status by voice | Resolve an exact run ID or unique semantic DAG query in Manager, then invoke `ui_open_surface(surface="dag_status")`; one semantic call replaces opening the dashboard, choosing a run, and opening its view. |
+| Close the DAG status by voice | Invoke `ui_close_surface(surface="dag_status")`; no selector, coordinate, or synthetic input event is involved. |
 
 ## The layers must remain distinct
 
@@ -101,8 +110,8 @@ plane.
   actions they actually own.
 - Give text Manager agents and GPT Live a consistent, small browser-tool
   interface.
-- Make the implementation divisible into narrow changes with explicit file
-  ownership for parallel Auto Fix DAGs.
+- Keep repository ownership explicit while implementing the core and Desktop
+  changes serially in one cohesive pull request per repository.
 
 ## Non-goals
 
@@ -218,7 +227,7 @@ Manager preference. If it is shown inside Agent Settings, the page writes it
 through one narrowly scoped preload IPC method whose sender is checked against
 the exact HomeRail window and origin. Desktop persists it in its own bounded
 configuration and applies it on the next launch; the renderer never receives a
-pairing credential, WS ticket, or a generic settings/file IPC surface.
+pairing credential, connection proof, or a generic settings/file IPC surface.
 
 Runtime disable is a fail-closed state transition:
 
@@ -237,7 +246,7 @@ The UI reports the capability as off as soon as this transition completes. A
 failed cleanup keeps calls denied and reports a diagnostic; it never leaves the
 toggle visually off while accepting new work.
 
-When enabled, policy has three independently reportable capabilities:
+The target design has three independently reportable policy capabilities:
 
 | Capability | Meaning |
 | --- | --- |
@@ -245,26 +254,31 @@ When enabled, policy has three independently reportable capabilities:
 | `observe` | Capture bounded HomeRail page/widget evidence. |
 | `act` | Invoke approved UI tools; canonical mutations still require normal permission/confirmation. |
 
-Initial product settings may expose only one `On` switch and keep the policy
-defaults fixed (`catalog=true`, `observe=true`, `act=true-with-policy`). The
-protocol must still advertise the three capabilities so enterprise policy or a
-future UI can disable them independently.
+Initial product settings expose only one `On` switch. The implemented first
+slice negotiates `catalog` and `act`; `observe` is added to capability
+negotiation only when the capture/inspection executor exists. This avoids
+advertising screenshot authority that Desktop cannot yet exercise. The target
+protocol keeps all three independently disableable for enterprise policy or a
+future settings UI.
 
 Startup sequence:
 
 1. Desktop reads the persisted experimental setting before Electron is ready.
 2. If enabled, Desktop selects the validated Chromium feature set.
-3. After the HomeRail window commits its allowed origin, Desktop attaches CDP.
+3. Desktop may attach CDP while the trusted first-run loading page is visible,
+   but keeps the catalog empty until the exact configured HomeRail UI origin
+   commits. A different loopback port or hostname is not equivalent.
 4. Desktop probes the `WebMCP` domain; it never assumes support from a version
    number.
-5. Agent UI verifies the document is origin-isolated, has not opted out through
-   `document.domain`, and is allowed by the `tools` Permissions Policy. This is
-   origin isolation, not the separate COOP/COEP `crossOriginIsolated` state.
+5. Chromium applies the page API's origin-isolation and `tools` Permissions
+   Policy requirements. The first slice additionally limits Desktop projection
+   to the top frame, exact HomeRail origin, and exact application-owned contract;
+   a formal compatibility fixture will make those browser prerequisites visible.
 6. Desktop connects to Manager with an authenticated `browser-tools.v1` hello.
 7. Agent UI registers tools only when `document.modelContext` exists and the
    HomeRail feature is enabled.
-8. Any missing capability is reported as `unsupported`, not treated as a fatal
-   Desktop initialization failure.
+8. Any missing capability is reported as unavailable/unsupported, not treated
+   as a fatal Desktop initialization failure.
 
 The formal compatibility test owns the exact feature-name matrix. The local
 probe succeeded with `WebMCP`; upstream Chrome documentation also refers to
@@ -285,31 +299,30 @@ feature names.
   accepted for v1.
 - Pairing: Desktop and Manager possess an OS-user-scoped browser-bridge
   credential stored outside web content with Unix mode `0600` or equivalent
-  Windows ACL. Creation/repair is owned by a HomeRail CLI/Desktop pairing flow,
-  not an unauthenticated HTTP endpoint.
-- Authentication: a nonce-based mutual challenge proves both sides possess the
-  current pairing credential, then Manager issues a one-time, short-lived WS
-  ticket. Possessing a ticket authenticates one exact Desktop instance and
-  negotiated capability set, not arbitrary Manager APIs.
-- The ticket is supplied in an authorization header or negotiated subprotocol,
-  not a query string that is likely to be logged.
+  Windows ACL. Manager creates or repairs it in the shared HomeRail data home;
+  Desktop only reads it. No unauthenticated HTTP endpoint reveals or creates
+  the credential.
+- Authentication: after a loopback-only upgrade, Manager sends a random nonce
+  and HMAC proof. Desktop verifies it, then responds with its own random nonce,
+  process instance identity, requested capability set, and a proof bound to all
+  those values. Only then does Manager mark that socket ready. The credential
+  is never sent over the connection or placed in a URL.
 - Loopback, absence of an `Origin` header, or knowledge of the port is never
   sufficient authentication.
-- Each ticket binds requested capabilities, Desktop instance ID, expiry, and a
-  single successful upgrade.
-- Manager restart invalidates tickets and connections; Desktop repeats the
-  challenge with the durable pairing credential. Desktop restart creates a new
-  instance identity. Credential rotation/revocation invalidates the old key and
-  requires explicit repair if the peers no longer agree.
+- Each authenticated socket binds its negotiated capabilities, Desktop process
+  instance ID, random connection ID, and one connection lifetime.
+- Manager restart invalidates connections; Desktop repeats the challenge with
+  the durable pairing credential. Desktop restart creates a new instance
+  identity. Credential rotation/revocation invalidates the old key and requires
+  explicit repair if the peers no longer agree.
 - A missing, unreadable, overly permissive, or mismatched credential makes the
   bridge unavailable. It never falls back to unauthenticated loopback.
 - A browser client, if added later, must also pass an exact Origin allowlist.
 
 The live-voice ticket and Origin checks are useful patterns, but browser tools
-use a separate issuer, audience, and scope. `AUTH-01` must validate the concrete
-cross-platform credential and challenge flow before Manager or Desktop bridge
-implementation starts; the current Desktop service supervisor does not provide
-a shared Manager-child secret.
+use a separate credential, audience, and scope. The implementation must
+validate the concrete cross-platform credential and challenge flow; the
+Desktop service supervisor does not provide or assume a Manager-child secret.
 
 This pairing model protects against remote clients, other OS users, accidental
 public exposure, and a sandboxed renderer that cannot read the credential. It
@@ -376,10 +389,18 @@ from the CDP projection's `readOnly` and `untrustedContent` fields. They are
 retained as hints only; Manager policy assigns the authoritative effect and
 permission class.
 
-### Envelope
+### Implemented first-slice wire profile and target envelope
 
-All messages use a discriminated, versioned envelope and are validated on both
-sides.
+The first vertical slice uses small, discriminated messages with `type` and
+integer `version`: `auth.challenge`, `auth.response`, `auth.ready`,
+`page.catalog`, `page.invalidated`, `tool.invoke`, and `tool.result`. Both sides
+validate strict size limits, identities, digests, deadlines, and fixed tool
+allowlists. This is the implemented compatibility profile for direct HomeRail
+surface control.
+
+Before observation or mutating plugin actions are added, that profile evolves
+to the richer envelope below. Those fields and message families are target v1
+requirements, not claims about the current first-slice implementation.
 
 ```json
 {
@@ -393,7 +414,7 @@ sides.
 }
 ```
 
-Required message families:
+Target message families:
 
 | Direction | Message | Purpose |
 | --- | --- | --- |
@@ -509,19 +530,28 @@ host executors are tested against that exact schema.
 
 Keep the first catalog deliberately small:
 
-| Tool | Effect | Route | Behavior |
-| --- | --- | --- | --- |
-| `ui_get_state` | read | Manager | Return selected workspace/canvas owner, surfaces, and authoritative revisions; optionally merge bounded local focus state. |
-| `ui_list_actions` | read | Manager | List actions from the current canonical Generative UI Action Registry projection. |
-| `ui_describe_widget` | read | Manager composite | Return canonical identity plus bounded Desktop-rendered facts. |
-| `ui_focus_widget` | presentational | Renderer | Focus/scroll a stable widget without changing canonical business state. |
-| `ui_set_widget_expanded` | presentational | Renderer | Expand/collapse a supported host-owned panel. |
-| `ui_capture_widget` | read | Manager + Desktop | Produce a browser-observation Artifact reference after capture authorization. |
-| `ui_evaluate_widget` | read + processing policy | Manager composite | Ask an authorized image-capable evaluator for a bounded report; local by default, external egress/cost separately confirmed; phase 4. |
-| `ui_invoke_action` | mutating | Manager | Invoke a registered Generative UI plugin action through `PluginActionBus`. |
+| Tool | Effect | Route | Delivery | Behavior |
+| --- | --- | --- | --- | --- |
+| `ui_get_state` | read | Renderer through policy broker | First slice | Return the visible trusted surface and stable selected run identity. |
+| `ui_open_surface` | presentational | Manager resolver + Renderer | First slice | Open a trusted surface directly. For `dag_status`, accept an exact run ID, one unique semantic query, or no target for the run list. |
+| `ui_close_surface` | presentational | Renderer through policy broker | First slice | Close a trusted surface without changing DAG or workspace business state. |
+| `ui_list_actions` | read | Manager | Planned | List actions from the current canonical Generative UI Action Registry projection. |
+| `ui_describe_widget` | read | Manager composite | Planned | Return canonical identity plus bounded Desktop-rendered facts. |
+| `ui_focus_widget` | presentational | Renderer | Planned | Focus/scroll a stable widget without changing canonical business state. |
+| `ui_set_widget_expanded` | presentational | Renderer | Planned | Expand/collapse a supported host-owned panel. |
+| `ui_capture_widget` | read | Manager + Desktop | Planned | Produce a browser-observation Artifact reference after capture authorization. |
+| `ui_evaluate_widget` | read + processing policy | Manager composite | Planned | Ask an authorized image-capable evaluator for a bounded report; local by default, external egress/cost separately confirmed. |
+| `ui_invoke_action` | mutating | Manager | Planned | Invoke a registered Generative UI plugin action through `PluginActionBus`. |
 
 No coordinate-based click, arbitrary selector, raw key injection, or generic
 form fill belongs in v1.
+
+The first slice deliberately prioritizes direct interface navigation because it
+is independently useful, especially with voice. For example, “打开数据同步的
+DAG 状态” is one `ui_open_surface` call after Manager resolves “数据同步” to one
+run. It is not a hidden macro that clicks the top-right dashboard, scans labels,
+selects a row, and clicks again. Ambiguous queries fail and return candidate run
+IDs rather than guessing.
 
 ### Action rules
 
@@ -795,16 +825,16 @@ tools and executes their handlers. This matches the Realtime API model for
 tools whose application owns private system access, business logic, and
 approval checks.
 
-The first Live integration exposes a small stable schema:
+The first Live integration exposes this stable schema:
 
 - `ui_get_state`;
-- `ui_list_actions`;
-- `ui_describe_widget`;
-- `ui_focus_widget`;
-- `ui_set_widget_expanded`;
-- `ui_capture_widget`;
-- `ui_evaluate_widget`;
-- `ui_invoke_action`.
+- `ui_open_surface`;
+- `ui_close_surface`.
+
+The observation and canonical-action phases later extend the stable catalog
+with `ui_list_actions`, `ui_describe_widget`, `ui_focus_widget`,
+`ui_set_widget_expanded`, `ui_capture_widget`, `ui_evaluate_widget`, and
+`ui_invoke_action` after their authorization and Artifact paths exist.
 
 `ui_capture_widget` returns an Artifact reference and metadata only. HomeRail's
 current Live tool-result path serializes results as text; an Artifact reference
@@ -841,8 +871,15 @@ For voice-driven mutation:
 
 Example demonstration:
 
-> Open the current task, expand the second Worker card, and tell me why it
-> failed.
+> 打开数据同步这个 DAG 的状态。
+
+Manager resolves the semantic name to exactly one persisted run and invokes
+the renderer tool. The DAG overlay becomes visible on that run in one tool
+call. “关闭 DAG 状态” similarly maps to one close call.
+
+A later observation/action demonstration is:
+
+> Open the current task, expand the second Worker card, and tell me why it failed.
 
 This should use state/list/expand/describe or capture tools, not coordinate
 clicking.
@@ -998,62 +1035,42 @@ gate does not claim GPT Live received raw image input.
 - Evaluate frozen per-turn direct page catalogs.
 - Design a real external MCP runtime broker as a separate Epic.
 
-## Issue decomposition and ownership
+## Delivery tracking and ownership
 
-The Epic should track the following logical issues. Each implementation issue
-owns the listed files or new directory and should avoid opportunistic edits to
-another issue's integration surface.
+There are exactly two implementation tasks. One Agent works through their
+checklists serially; no set of 28 child Issues is required.
 
-| ID | Repository | Scope and primary ownership | Depends on |
-| --- | --- | --- | --- |
-| AUTH-01 | `homerail` | Auth/local-control design spike: OS-user credential, same-UID threat boundary, mutual challenge, existing Manager, restart, rotation, revocation, server-side loopback/proxy isolation and URL selection; no production endpoint | — |
-| BR-01 | `homerail` | `homerail_protocol`: all `browser-tools.v1` wire types, including auth, tool RPC, page/contract/policy identities, inspection, capture grant/result, schemas, limits, errors and tests | AUTH-01 |
-| BR-02 | `homerail` | Local-listener authenticated `/ws/browser-tools`, socket/proxy rejection, pairing/ticket endpoint, connection/page registry, diagnostic quarantine and RPC lifecycle; no Agent adapters | AUTH-01, BR-01 |
-| DESK-01 | `homerail_desktop` | Repeatable Electron 43 WebMCP/CDP compatibility fixture and matrix; no production enablement | — |
-| DESK-02 | `homerail_desktop` | Desktop-owned feature setting, pre-ready Chromium selection, immediate runtime disable state machine, restricted preload IPC and sender validation; no CDP controller | DESK-01 |
-| DESK-03 | `homerail_desktop` | Isolated CDP WebMCP controller: attach/probe/catalog/invoke/cancel/navigation/detach; new module/tests, no shared window wiring | DESK-01 |
-| DESK-04 | `homerail_desktop` | Paired Manager bridge client and final integration; owns `window.ts`, local-control URL changes in `service-supervisor.ts`, reconnect and invalidation wiring | AUTH-01, BR-01, BR-02, DESK-02, DESK-03 |
-| UI-01 | `homerail` | `homerail_protocol`: pure `UiToolContract` catalog, routing/effect/egress/cost metadata, trusted contract digests and tests; no executor closures | BR-01 |
-| UI-02 | `homerail` | Agent UI WebMCP adapter lifecycle, capability detection, registration/removal and typed Manager proxy; no product tool handlers/settings page | UI-01 |
-| UI-03 | `homerail` | Standalone experimental browser-tools setting/presence component using the restricted Desktop API; no `AgentSettingsPage.vue` | DESK-02 |
-| UI-04 | `homerail` | Stable widget DOM identity, trusted capture sensitivity markers, revision attributes, render-stability state and tests | — |
-| UI-05 | `homerail` | Renderer-only presentation executors (`focus`, `expand/collapse`) over stable IDs and WebMCP registration | UI-01, UI-02, UI-04 |
-| ACT-01 | `homerail` | Manager state/action executors and typed page proxy, limited to Generative UI Action Registry + `PluginActionBus`; no DAG/Workspace mutation | UI-01 |
-| OBS-01 | `homerail` | Manager browser-observation Artifact ingest/storage, one-use upload grants, digest verification, provenance, TTL and access control; wire contract stays in BR-01 | BR-01 |
-| OBS-D1 | `homerail_desktop` | Widget-first screenshot executor, trusted masks, page-capture confirmation hooks, pixel/byte bounds and digest; no shared window wiring | DESK-03, UI-04, OBS-01 |
-| OBS-D2 | `homerail_desktop` | Bounded box/overflow/partial-AX/style inspection executor and sensitive-value sanitization; no capture or shared window wiring | DESK-03, UI-04 |
-| OBS-02 | `homerail` | Manager observation broker only: authorize and route capture/inspect, finalize Artifacts, bind canonical revisions; no Agent/Live tools | BR-02, OBS-01, OBS-D1, OBS-D2 |
-| OBS-03 | `homerail` | Structured `ui_evaluation` Artifact, local-default image-capable evaluator, processor-specific grants and explicit external-egress/retention/cost policy; no automatic repair | OBS-02 |
-| CAT-01 | `homerail` | `homerail_protocol`: read-only MCP & Tool Provider descriptor/catalog contract | — |
-| CAT-02 | `homerail` | Manager catalog builder from existing Manager/DAG tool source declarations; no SQLite | CAT-01 |
-| CAT-03 | `homerail` | Read-only Manager catalog endpoint and live browser-provider presence merge | CAT-02, BR-02 |
-| CAT-04 | `homerail` | Agent UI catalog API client and standalone read-only settings component/locales | CAT-01, CAT-03 |
-| SET-01 | `homerail` | Sole owner of `AgentSettingsPage.vue` integration: mount CAT-04/UI-03, isolate dormant MCP CRUD, update settings E2E | CAT-04, UI-03 |
-| AGENT-01 | `homerail` | Text Manager Agent adapter for stable contracts/meta-tools; policy routing, frozen per-turn context and outcome evidence | UI-05, ACT-01, OBS-02 |
-| LIVE-01 | `homerail` | GPT Live-only stable tool adapter; reuse #169 context/session/revision contract and #168 committed-outcome baseline; structured `ui_evaluate_widget` text result | AGENT-01, OBS-03, #169 |
-| SEC-01 | `homerail` | Black-box adversarial suite only: remote/other-user impersonation, proxy exposure, replay, malicious/mismatched catalog, stale navigation, oversized data, capture privacy and evaluator egress | DESK-04, ACT-01, OBS-03 |
-| QA-C1 | `homerail` | Core integration/evals for default-off/unsupported init, catalog, policy, actions, observation and Manager/Live adapters | SET-01, LIVE-01, SEC-01 |
-| QA-D1 | `homerail_desktop` | Real Desktop Electron E2E: enable restart, immediate disable/revocation, CDP lifecycle, navigation/detach, paired reconnect, masks/capture/inspect and voice showcase | DESK-04, OBS-D1, OBS-D2, QA-C1 |
+### HomeRail core task — `homerail#208`
 
-Recommended concurrency:
+One core branch and one pull request own:
 
-- AUTH-01, DESK-01, UI-04, and CAT-01 can start independently.
-- After AUTH-01, BR-01 can proceed while DESK-02/DESK-03 and CAT-02 proceed on
-  their own prerequisites.
-- BR-02 and UI-01 are serialized behind BR-01 so only one issue at a time owns
-  protocol exports.
-- UI-02, UI-03, ACT-01, CAT-03, and OBS-01 own separate modules and can proceed
-  when their direct prerequisites land.
-- OBS-D1 and OBS-D2 are separate Desktop leaf modules and can run in parallel;
-  DESK-04 alone owns shared window/supervisor integration.
-- OBS-02 owns the internal Manager broker; AGENT-01 and LIVE-01 separately own
-  text Manager and Live projections.
-- SET-01 alone owns the large Agent Settings integration file.
-- Every implementation issue carries its own security acceptance criteria;
-  SEC-01 adds adversarial black-box coverage and is not an omnibus refactor.
-- QA-C1 and QA-D1 remain in their respective repositories.
+- the stable protocol and pure tool contracts;
+- Manager authentication, policy routing, page catalog quarantine, and RPC;
+- Manager Agent and GPT Live projection;
+- semantic DAG target resolution and the direct open/close UI executors;
+- the Agent UI WebMCP adapter and experimental settings surface;
+- later provider-catalog, observation Artifact, visual evaluation, security,
+  and core integration phases from this document.
 
-The following are related future work, not Epic children or completion gates:
+### Electron Desktop task — `homerail_desktop#50`
+
+One Desktop branch and one pull request own:
+
+- the default-off process setting and restricted preload IPC;
+- pre-ready Chromium feature selection and immediate runtime revocation;
+- the allowlisted CDP WebMCP controller;
+- authenticated local Manager bridge, local/public URL separation, reconnect,
+  navigation and debugger-detach handling;
+- later bounded screenshot/inspection executors and real Electron E2E from this
+  document.
+
+The repositories necessarily use two pull requests because a GitHub pull
+request has exactly one base repository. They are nevertheless one ordered
+delivery: freeze and test the core wire contract first, implement Desktop
+against it second, then run cross-repository E2E before either PR is marked
+ready to merge.
+
+The following are related future work, not completion gates for these two tasks:
 
 - `/ws/events` v2 hardening (version, cursor, subscriptions, auth, real pong);
 - an isolated external-page host with a read-only, single-page frozen catalog;
@@ -1072,7 +1089,51 @@ Each PR should state:
 - security/privacy evidence;
 - remaining experimental risks.
 
-## Epic completion gates
+## First vertical slice evidence — 2026-08-09
+
+This slice implements the demonstration-critical semantic UI path. It is not a
+claim that screenshot, inspection, visual evaluation, or mutating plugin-action
+phases are complete.
+
+- [x] Core and Desktop use an explicit, bounded `browser-tools.v1`
+      compatibility profile with `catalog` and `act` only.
+- [x] The feature is Desktop-owned and default-off. Enabling from the real
+      settings UI persists a private setting and reports that restart is
+      required; a restarted Electron process exposes `document.modelContext`.
+- [x] Manager and Desktop mutually authenticate over loopback with a dedicated
+      `0600` Browser Tools credential. The privileged bridge never selects the
+      public Manager access URL and rejects forwarding headers and browser
+      `Origin` upgrades.
+- [x] Desktop projects only the top-frame, exact-origin, exact-contract
+      `ui_get_state`, `ui_open_surface`, and `ui_close_surface` registrations.
+      Manager independently verifies page-descriptor and trusted-contract
+      digests; altered or unknown registrations never reach an Agent.
+- [x] Text Manager and the existing GPT Live tool harness receive the same
+      stable tool definitions and callbacks.
+- [x] A real isolated Electron first-run completed its loading animation and
+      onboarding without Browser Tools registration or connection while the
+      feature was off.
+- [x] In a real Electron run, one Manager semantic call resolved the unique DAG
+      name `pattern-quorum-offline`, traversed Manager → `/ws/browser-tools` →
+      Desktop CDP → renderer WebMCP, and visibly opened the exact persisted run
+      `webmcp-e2e-dag-status` in the DAG Runtime graph. `ui_get_state` returned
+      that stable identity and `ui_close_surface` removed the overlay.
+- [x] Turning the feature off in the running settings UI immediately removed
+      the page catalog, disconnected the provider and bridge, denied a later
+      Manager invocation, and detached the privileged runtime without waiting
+      for restart.
+- [x] Deterministic tests cover mutual-proof failure, proxy/Origin rejection,
+      strict loopback parsing, descriptor/contract drift, exact UI origin,
+      stale catalog invalidation, Manager disconnect cancellation, first-run
+      loading-page isolation, immediate disable, restart gating, and stale
+      window-start races.
+
+Remaining work in the two tracking tasks includes the richer policy/call
+envelope, observation Artifacts, screenshot/privacy controls, bounded runtime
+inspection, visual evaluation, confirmed plugin actions, and the broader Live
+Voice demonstration. Those remain unchecked below.
+
+## Delivery completion gates
 
 - [ ] Default-off startup and first-run initialization are unchanged.
 - [ ] Turning the feature off immediately unregisters tools, denies new calls,
@@ -1099,6 +1160,9 @@ Each PR should state:
       content; whole-page capture remains separately confirmed and off by
       default for Agent calls.
 - [ ] Read and presentational tools operate only stable HomeRail targets.
+- [ ] Text Agent and Live Voice can open one exact or uniquely named DAG status
+      and close it with one semantic tool call, without selectors, coordinates,
+      synthetic input, or replaying the dashboard click path.
 - [ ] V1 mutations are limited to registered Generative UI plugin actions and
       use `PluginActionBus` permission, confirmation, idempotency, and committed
       revision evidence.
@@ -1119,7 +1183,7 @@ Each PR should state:
 - [ ] A2UI, DAG projection, and `/ws/events` remain functional and authoritative
       with the experiment both on and off.
 
-## Open questions to resolve in implementation issues
+## Open questions to resolve during implementation
 
 1. Which Chromium feature-name combination is required across every supported
    Electron release, and when does the CDP domain become available by default?
@@ -1136,7 +1200,7 @@ Each PR should state:
    freeze them per turn or always use meta-tools?
 
 None of these questions invalidates the Partial Go decision. They are bounded
-design choices owned by the relevant issues.
+design choices owned by the relevant phase in one of the two repository tasks.
 
 ## Primary references
 

@@ -118,6 +118,11 @@ describe("Manager Agent signed turn envelope", () => {
     })).toBe(true);
     expect(authority.authorizeApiRequest({
       credential,
+      method: "POST",
+      pathname: "/api/browser-tools/invoke",
+    })).toBe(true);
+    expect(authority.authorizeApiRequest({
+      credential,
       method: "GET",
       pathname: "/api/skills/palquery/views/breed-route/materialize",
     })).toBe(false);

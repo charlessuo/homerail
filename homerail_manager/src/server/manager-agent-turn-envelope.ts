@@ -34,6 +34,7 @@ export const DEFAULT_MANAGER_AGENT_API_SCOPES = Object.freeze([
   "GET:/api/skills/*",
   "POST:/api/dag/patterns/*/instantiate",
   "POST:/api/dag/workflows/sync",
+  "POST:/api/browser-tools/invoke",
   "POST:/api/plugins/tools/invoke",
   "POST:/api/skills/*/views/*/materialize",
   "POST:/api/skills/*/views/present",

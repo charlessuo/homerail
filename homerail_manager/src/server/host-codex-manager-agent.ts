@@ -75,6 +75,7 @@ import {
 } from "homerail-protocol";
 import { pluginJsonDigest } from "../plugins/descriptor.js";
 import { acquireCodexThreadLease } from "./codex-thread-lease.js";
+import { invokeHomeRailBrowserUiTool } from "./browser-ui-tools.js";
 
 type ToolHandlerResult = {
   content: Array<{ type: "text"; text: string }>;
@@ -1059,6 +1060,27 @@ export function createManagerTools(
     throw new Error("Plugin Context failed validation or digest verification in Host Manager Agent");
   }
   const tools: ToolDefinition[] = [
+    {
+      ...managerAgentToolSpec("ui_get_state"),
+      async handler(args) {
+        const result = await invokeHomeRailBrowserUiTool("ui_get_state", args);
+        return { content: [{ type: "text", text: short(result) }] };
+      },
+    },
+    {
+      ...managerAgentToolSpec("ui_open_surface"),
+      async handler(args) {
+        const result = await invokeHomeRailBrowserUiTool("ui_open_surface", args);
+        return { content: [{ type: "text", text: short(result) }] };
+      },
+    },
+    {
+      ...managerAgentToolSpec("ui_close_surface"),
+      async handler(args) {
+        const result = await invokeHomeRailBrowserUiTool("ui_close_surface", args);
+        return { content: [{ type: "text", text: short(result) }] };
+      },
+    },
     {
       name: "list_projects",
       description: "List projects known by the HomeRail Manager.",
