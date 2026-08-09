@@ -28,6 +28,7 @@ import {
 
 const SOURCE_INPUTS = [
   "homerail_worker/Dockerfile",
+  "homerail_worker/native/codex-secret-guard.c",
   "homerail_worker/scripts/configure-apt-sources.mjs",
   "homerail_worker/package.json",
   "homerail_worker/package-lock.json",

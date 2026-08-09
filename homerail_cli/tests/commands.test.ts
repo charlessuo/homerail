@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { Readable } from "node:stream";
 import type { Command } from "commander";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
@@ -1980,6 +1980,7 @@ describe("runtime command", () => {
     await program.parseAsync(["node", "homerail", "--json", "runtime", "status"]);
 
     const parsed = JSON.parse(logSpy.mock.calls[0][0]);
+    expect(parsed.runtimeRoot).toBe(resolve(process.cwd(), ".."));
     expect(parsed.managerBindHost).toBe("127.0.0.1");
     expect(parsed.managerAccessUrl).toBe("http://localhost:19191");
     expect(parsed.uiBindHost).toBe("127.0.0.1");
@@ -2003,6 +2004,7 @@ describe("runtime command", () => {
       port: 19191,
       accessUrl: "http://localhost:19191",
       publicUrl: "https://homerail.example.test",
+      runtimeRoot: "/opt/homerail/runtime-a",
       startedAt: Date.now(),
     }));
     mockFetch({ success: true, data: { connected_nodes: 0, connected_workers: 0 } });
@@ -2018,6 +2020,7 @@ describe("runtime command", () => {
     expect(parsed.managerUrl).toBe("http://localhost:19191");
     expect(parsed.managerAccessUrl).toBe("https://homerail.example.test");
     expect(parsed.managerPublicUrl).toBe("https://homerail.example.test");
+    expect(parsed.managerRuntimeRoot).toBe("/opt/homerail/runtime-a");
   });
 
   it("aborts start when stored model config cannot be applied", () => {
