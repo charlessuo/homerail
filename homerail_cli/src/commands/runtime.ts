@@ -68,7 +68,9 @@ interface UiStartOpts {
 }
 
 interface RuntimeStatus {
+  runtimeRoot: string;
   managerPid?: number;
+  managerRuntimeRoot?: string;
   nodePid?: number;
   uiPid?: number;
   uiHttpsPid?: number;
@@ -165,6 +167,8 @@ interface ManagerServiceState {
   port: number;
   accessUrl: string;
   publicUrl?: string;
+  /** Runtime tree that supplied the detached Manager process. */
+  runtimeRoot?: string;
   startedAt: number;
 }
 
@@ -509,6 +513,7 @@ async function startRuntime(
       port: managerPort,
       accessUrl: client.baseUrl,
       publicUrl: managerPublicUrl,
+      runtimeRoot: resolveRepoRoot(),
       startedAt: Date.now(),
     });
     printMessage(`Started Manager pid=${pid}`);
@@ -615,7 +620,9 @@ async function getRuntimeStatus(globalOpts: GlobalOpts): Promise<RuntimeStatus> 
     managerHealthy = false;
   }
   const status: RuntimeStatus = {
+    runtimeRoot: resolveRepoRoot(),
     managerPid,
+    managerRuntimeRoot: managerState?.runtimeRoot,
     nodePid,
     uiPid: uiStatus.uiPid,
     uiHttpsPid: uiStatus.uiHttpsPid,
@@ -1371,6 +1378,9 @@ function readManagerState(): ManagerServiceState | undefined {
         port: parsed.port,
         accessUrl: parsed.accessUrl,
         publicUrl: typeof parsed.publicUrl === "string" ? parsed.publicUrl : undefined,
+        runtimeRoot: typeof parsed.runtimeRoot === "string" && parsed.runtimeRoot
+          ? parsed.runtimeRoot
+          : undefined,
         startedAt: typeof parsed.startedAt === "number" ? parsed.startedAt : 0,
       };
     }
