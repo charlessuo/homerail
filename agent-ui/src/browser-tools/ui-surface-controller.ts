@@ -1,5 +1,6 @@
 import { http } from '@/api/clients/http-client'
 import type { useAgentStore } from '@/stores/agent-store'
+import { validateHomeRailUiToolInput } from 'homerail-protocol'
 
 export interface BrowserToolRunSummary {
   runId: string
@@ -67,40 +68,24 @@ export function resolveDagRunTarget(
   throw new Error(`No DAG run matches: ${query}`)
 }
 
-function requiredRecord(value: unknown): Record<string, unknown> {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) {
-    throw new Error('Tool input must be an object')
-  }
-  return value as Record<string, unknown>
-}
-
-function optionalBoundedString(value: unknown, field: string): string | undefined {
-  if (value === undefined) return undefined
-  if (typeof value !== 'string') throw new Error(`${field} must be a string`)
-  const result = value.trim()
-  if (!result || result.length > 256 || /[\u0000-\u001f\u007f]/.test(result)) {
-    throw new Error(`${field} must contain 1-256 printable characters`)
-  }
-  return result
-}
-
 export async function executeHomeRailUiTool(
   name: string,
   rawInput: unknown,
   controller: HomeRailUiSurfaceController,
 ): Promise<Record<string, unknown>> {
-  const input = requiredRecord(rawInput)
+  if (name !== 'ui_get_state' && name !== 'ui_open_surface' && name !== 'ui_close_surface') {
+    throw new Error(`Unknown HomeRail UI tool: ${name}`)
+  }
+  const input = validateHomeRailUiToolInput(name, rawInput)
   if (name === 'ui_get_state') {
-    if (Object.keys(input).length) throw new Error('ui_get_state does not accept input fields')
     return { ok: true, state: controller.getState() }
   }
 
-  const surface = optionalBoundedString(input.surface, 'surface')
-  if (surface !== 'dag_status') throw new Error(`Unsupported UI surface: ${surface ?? '(missing)'}`)
+  const surface = input.surface as 'dag_status'
 
   if (name === 'ui_open_surface') {
-    const entityId = optionalBoundedString(input.entity_id, 'entity_id')
-    const query = optionalBoundedString(input.query, 'query')
+    const entityId = input.entity_id as string | undefined
+    const query = input.query as string | undefined
     const runId = resolveDagRunTarget(await controller.listDagRuns(), {
       entity_id: entityId,
       query,
@@ -115,9 +100,6 @@ export async function executeHomeRailUiTool(
   }
 
   if (name === 'ui_close_surface') {
-    if (input.entity_id !== undefined || input.query !== undefined) {
-      throw new Error('ui_close_surface accepts only surface')
-    }
     controller.closeDagStatus()
     return { ok: true, surface, state: controller.getState() }
   }
@@ -140,7 +122,13 @@ export function createAgentUiSurfaceController(
       const response = await http.get<{ runs?: BrowserToolRunSummary[] }>('/api/runs')
       return Array.isArray(response.data?.runs) ? response.data.runs : []
     },
-    openDagStatus: (runId) => store.openRuntimeOverlay(runId),
+    openDagStatus: async (runId) => {
+      // Settings replaces the main surface in the root view. Leave it only
+      // after the target opens, so success always corresponds to a visible
+      // overlay while a failed direct-page invocation remains atomic.
+      await store.openRuntimeOverlay(runId)
+      store.settingsPageOpen = false
+    },
     closeDagStatus: () => store.closeRuntimeOverlay(),
   }
 }

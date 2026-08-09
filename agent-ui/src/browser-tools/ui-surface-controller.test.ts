@@ -21,6 +21,7 @@ describe('HomeRail UI surface controller', () => {
       runtimeOverlayView: 'run_list',
       runtimeOverlayRunId: null,
       currentRunId: 'previous-run',
+      settingsPageOpen: false,
       openRuntimeOverlay: vi.fn(),
       closeRuntimeOverlay: vi.fn(),
     }
@@ -37,6 +38,41 @@ describe('HomeRail UI surface controller', () => {
       dag_run_id: 'selected-run',
       dag_status_view: 'dag_graph',
     })
+  })
+
+  it('leaves settings and makes a semantic DAG open visibly reachable', async () => {
+    const store = {
+      runtimeOverlayOpen: false,
+      runtimeOverlayView: 'run_list',
+      runtimeOverlayRunId: null,
+      currentRunId: null,
+      settingsPageOpen: true,
+      openRuntimeOverlay: vi.fn(async () => {}),
+      closeRuntimeOverlay: vi.fn(),
+    }
+    const controller = createAgentUiSurfaceController(store as never)
+
+    await controller.openDagStatus('run-002')
+
+    expect(store.settingsPageOpen).toBe(false)
+    expect(store.openRuntimeOverlay).toHaveBeenCalledWith('run-002')
+  })
+
+  it('keeps settings visible when the target cannot be opened', async () => {
+    const store = {
+      runtimeOverlayOpen: false,
+      runtimeOverlayView: 'run_list',
+      runtimeOverlayRunId: null,
+      currentRunId: null,
+      settingsPageOpen: true,
+      openRuntimeOverlay: vi.fn(async () => { throw new Error('DAG run not found') }),
+      closeRuntimeOverlay: vi.fn(),
+    }
+    const controller = createAgentUiSurfaceController(store as never)
+
+    await expect(controller.openDagStatus('missing')).rejects.toThrow('not found')
+
+    expect(store.settingsPageOpen).toBe(true)
   })
 
   it('resolves exact ids and unique semantic queries without guessing', () => {
@@ -80,5 +116,24 @@ describe('HomeRail UI surface controller', () => {
     }, controller)
     expect(controller.closeDagStatus).toHaveBeenCalledOnce()
     expect(closed).toMatchObject({ ok: true, state: { active_surface: null } })
+  })
+
+  it.each([
+    ['ui_get_state', { extra: true }],
+    ['ui_open_surface', { surface: 'dag_status', run_id: 'run-001' }],
+    ['ui_open_surface', { surface: 'dag_status', entity_id: 'run-001', query: 'sync' }],
+    ['ui_close_surface', { surface: 'dag_status', query: 'sync' }],
+  ])('rejects schema-invalid %s input before any UI side effect', async (name, input) => {
+    const controller: HomeRailUiSurfaceController = {
+      getState: vi.fn(() => ({ active_surface: null, dag_run_id: null, dag_status_view: null })),
+      listDagRuns: vi.fn(async () => runs),
+      openDagStatus: vi.fn(async () => {}),
+      closeDagStatus: vi.fn(),
+    }
+
+    await expect(executeHomeRailUiTool(name, input, controller)).rejects.toThrow()
+    expect(controller.listDagRuns).not.toHaveBeenCalled()
+    expect(controller.openDagStatus).not.toHaveBeenCalled()
+    expect(controller.closeDagStatus).not.toHaveBeenCalled()
   })
 })

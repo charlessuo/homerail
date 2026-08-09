@@ -299,4 +299,28 @@ describe("Browser Tools WebSocket", () => {
     }));
     await rejection;
   });
+
+  it("rejects schema-invalid input before sending a page invocation", async () => {
+    const { broker, url } = await startBroker("browser-tools-test-secret");
+    const client = await connectAuthenticated(url, "browser-tools-test-secret");
+    let invocationCount = 0;
+    client.on("message", (raw) => {
+      const message = JSON.parse(raw.toString()) as Record<string, unknown>;
+      if (message.type === "tool.invoke") invocationCount += 1;
+    });
+    client.send(JSON.stringify({
+      type: "page.catalog",
+      version: BROWSER_TOOLS_PROTOCOL_VERSION,
+      page_id: "page-main",
+      tools: [catalogEntry()],
+    }));
+    await waitFor(() => (broker.status().tools as string[]).includes("ui_open_surface"));
+
+    await expect(broker.invoke("ui_open_surface", {
+      surface: "dag_status",
+      run_id: "run-001",
+    })).rejects.toThrow("unsupported field: run_id");
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(invocationCount).toBe(0);
+  });
 });

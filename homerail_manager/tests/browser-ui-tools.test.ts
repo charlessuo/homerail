@@ -87,4 +87,23 @@ describe("Manager browser UI target resolution", () => {
     });
     expect(invoke).toHaveBeenCalledWith("ui_get_state", {});
   });
+
+  it("rejects schema-invalid input at the HTTP boundary before invoking the broker", async () => {
+    const invoke = vi.fn(async () => ({ ok: true }));
+    const response = await routeRequest({
+      authorize: true,
+      body: {
+        name: "ui_open_surface",
+        input: { surface: "dag_status", run_id: "run-001" },
+      },
+      invoke: invoke as never,
+    });
+
+    expect(response).toMatchObject({
+      status: 400,
+      body: { success: false },
+    });
+    expect(String(response.body.error)).toContain("unsupported field: run_id");
+    expect(invoke).not.toHaveBeenCalled();
+  });
 });

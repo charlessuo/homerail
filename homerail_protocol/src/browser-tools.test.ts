@@ -8,6 +8,7 @@ import {
   browserPageToolDescriptorDigest,
   homeRailUiToolContract,
   uiToolContractDigest,
+  validateHomeRailUiToolInput,
 } from "./browser-tools.js";
 
 describe("browser tools contracts", () => {
@@ -60,5 +61,28 @@ describe("browser tools contracts", () => {
       ui_open_surface: "783158c38bf647ad841c277295413856b0c7e7f95c9d5a8a139b2e68a001cb7b",
       ui_close_surface: "79fe981d9a5325cdb29aead57672f2add1d101fb8228b5ae942142e4f1416053",
     });
+  });
+
+  it("validates and normalizes every frozen tool input", () => {
+    expect(validateHomeRailUiToolInput("ui_get_state", {})).toEqual({});
+    expect(validateHomeRailUiToolInput("ui_open_surface", {
+      surface: " dag_status ",
+      entity_id: " run-001 ",
+    })).toEqual({ surface: "dag_status", entity_id: "run-001" });
+    expect(validateHomeRailUiToolInput("ui_close_surface", {
+      surface: "dag_status",
+    })).toEqual({ surface: "dag_status" });
+  });
+
+  it.each([
+    ["ui_get_state", null, /must be an object/],
+    ["ui_get_state", { extra: true }, /unsupported field: extra/],
+    ["ui_open_surface", { surface: "dag_status", run_id: "run-001" }, /unsupported field: run_id/],
+    ["ui_open_surface", { surface: "dag_status", entity_id: 1 }, /entity_id must be a string/],
+    ["ui_open_surface", { surface: "dag_status", query: " " }, /1-256 printable/],
+    ["ui_open_surface", { surface: "dag_status", entity_id: "run", query: "run" }, /not both/],
+    ["ui_close_surface", { surface: "other" }, /requires surface=dag_status/],
+  ] as const)("rejects invalid %s input", (name, input, error) => {
+    expect(() => validateHomeRailUiToolInput(name, input)).toThrow(error);
   });
 });

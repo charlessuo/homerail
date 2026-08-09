@@ -12,6 +12,7 @@ import {
   homeRailUiToolContract,
   stableStringify,
   uiToolContractDigest,
+  validateHomeRailUiToolInput,
   type BrowserToolsCatalogEntry,
   type BrowserToolsInvokeMessage,
   type BrowserToolsManagerMessage,
@@ -88,28 +89,6 @@ function isTrustedHomeRailOrigin(raw: string): boolean {
   }
 }
 
-function validUiToolInput(name: HomeRailUiToolName, value: unknown): Record<string, unknown> {
-  const input = record(value, `${name} input`);
-  if (name === "ui_get_state") {
-    if (Object.keys(input).length !== 0) throw new Error("ui_get_state input must be empty");
-    return input;
-  }
-  const allowed = name === "ui_open_surface"
-    ? new Set(["surface", "entity_id", "query"])
-    : new Set(["surface"]);
-  if (Object.keys(input).some((key) => !allowed.has(key))) {
-    throw new Error(`${name} input contains unsupported fields`);
-  }
-  if (input.surface !== "dag_status") throw new Error(`${name} requires surface=dag_status`);
-  for (const key of ["entity_id", "query"] as const) {
-    if (input[key] !== undefined) safeString(input[key], key);
-  }
-  if (input.entity_id !== undefined && input.query !== undefined) {
-    throw new Error("Provide entity_id or query, not both");
-  }
-  return input;
-}
-
 function hasForwardingHeaders(req: http.IncomingMessage): boolean {
   return ["forwarded", "x-forwarded-for", "x-forwarded-host", "x-forwarded-proto"]
     .some((name) => req.headers[name] !== undefined);
@@ -177,7 +156,7 @@ export class BrowserToolsBroker {
     if (!catalog || !client.pageId) {
       throw new Error(`HomeRail UI tool is unavailable in the current page: ${toolName}`);
     }
-    const input = validUiToolInput(toolName, rawInput);
+    const input = validateHomeRailUiToolInput(toolName, rawInput);
     const boundedTimeout = Math.min(30_000, Math.max(250, Math.floor(timeoutMs)));
     const callId = randomUUID();
     const contract = homeRailUiToolContract(toolName)!;

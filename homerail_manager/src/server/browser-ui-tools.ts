@@ -2,6 +2,7 @@ import {
   HOMERAIL_MANAGER_TURN_HEADER,
   HOMERAIL_UI_SURFACES,
   HOMERAIL_UI_TOOL_NAMES,
+  validateHomeRailUiToolInput,
   type HomeRailUiToolName,
 } from "homerail-protocol";
 import type * as http from "node:http";
@@ -87,9 +88,9 @@ export async function invokeHomeRailBrowserUiTool(
   name: HomeRailUiToolName,
   rawInput: unknown,
 ): Promise<unknown> {
+  const input = validateHomeRailUiToolInput(name, rawInput);
   const broker = getBrowserToolsBroker();
   if (!broker) throw new Error("HomeRail Browser Tools is unavailable");
-  const input = inputRecord(rawInput);
 
   if (name === "ui_open_surface") {
     const surface = optionalString(input.surface, "surface");
@@ -172,9 +173,10 @@ export function browserUiToolRoutesHandler(
       if (!HOMERAIL_UI_TOOL_NAMES.includes(name as HomeRailUiToolName)) {
         throw new Error(`Unsupported HomeRail UI tool: ${name || "(missing)"}`);
       }
+      const input = validateHomeRailUiToolInput(name as HomeRailUiToolName, body.input);
       const result = await (options.invoke ?? invokeHomeRailBrowserUiTool)(
         name as HomeRailUiToolName,
-        body.input,
+        input,
       );
       res.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-store" });
       res.end(JSON.stringify({ success: true, data: { result } }));

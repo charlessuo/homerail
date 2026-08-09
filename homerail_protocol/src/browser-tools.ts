@@ -100,6 +100,67 @@ export function homeRailUiToolContract(name: string): UiToolContract | undefined
   return HOMERAIL_UI_TOOL_CONTRACTS.find((contract) => contract.name === name);
 }
 
+function browserToolInputRecord(value: unknown, name: string): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(`${name} input must be an object`);
+  }
+  return value as Record<string, unknown>;
+}
+
+function browserToolInputString(value: unknown, field: string): string {
+  if (typeof value !== "string") throw new Error(`${field} must be a string`);
+  const normalized = value.trim();
+  if (!normalized || normalized.length > 256 || /[\u0000-\u001f\u007f]/.test(normalized)) {
+    throw new Error(`${field} must contain 1-256 printable characters`);
+  }
+  return normalized;
+}
+
+/**
+ * Validate and normalize an invocation against the frozen browser-tools.v1
+ * contract. Callers use this at every trusted execution boundary instead of
+ * relying on a page implementation or an LLM client to honor JSON Schema.
+ */
+export function validateHomeRailUiToolInput(
+  name: HomeRailUiToolName,
+  value: unknown,
+): Record<string, unknown> {
+  const input = browserToolInputRecord(value, name);
+  const allowed = name === "ui_get_state"
+    ? new Set<string>()
+    : name === "ui_open_surface"
+      ? new Set(["surface", "entity_id", "query"])
+      : name === "ui_close_surface"
+        ? new Set(["surface"])
+        : null;
+  if (!allowed) throw new Error(`Unknown HomeRail UI tool: ${String(name)}`);
+
+  const unexpected = Object.keys(input).filter((key) => !allowed.has(key)).sort();
+  if (unexpected.length) {
+    throw new Error(`${name} input contains unsupported field: ${unexpected[0]}`);
+  }
+  if (name === "ui_get_state") return {};
+
+  const surface = browserToolInputString(input.surface, "surface");
+  if (surface !== "dag_status") throw new Error(`${name} requires surface=dag_status`);
+  if (name === "ui_close_surface") return { surface };
+
+  const entityId = input.entity_id === undefined
+    ? undefined
+    : browserToolInputString(input.entity_id, "entity_id");
+  const query = input.query === undefined
+    ? undefined
+    : browserToolInputString(input.query, "query");
+  if (entityId !== undefined && query !== undefined) {
+    throw new Error("Provide entity_id or query, not both");
+  }
+  return {
+    surface,
+    ...(entityId === undefined ? {} : { entity_id: entityId }),
+    ...(query === undefined ? {} : { query }),
+  };
+}
+
 export function uiToolContractDigest(contract: UiToolContract): string {
   return sha256Hex(stableStringify({
     name: contract.name,
