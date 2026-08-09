@@ -18,8 +18,11 @@ describe("read-only tool provider catalog", () => {
     expect(browserOn.bindings.every((binding) => binding.runtime_state === "connected")).toBe(true);
     expect(browserOn.tools.map((tool) => tool.name)).toEqual([
       "ui_close_surface",
+      "ui_describe_widget",
+      "ui_focus_widget",
       "ui_get_state",
       "ui_open_surface",
+      "ui_set_widget_expanded",
     ]);
   });
 });

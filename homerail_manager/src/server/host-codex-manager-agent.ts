@@ -61,6 +61,7 @@ import {
   resolvePrCloseout,
   validateHomerailPluginTurnContext,
   redactTelemetry,
+  HOMERAIL_UI_TOOL_NAMES,
   type ManagerAgentWidgetFileToolAdapter,
   type ManagerAgentWidgetFileToolResult,
   type ManagerAgentToolName,
@@ -1060,27 +1061,13 @@ export function createManagerTools(
     throw new Error("Plugin Context failed validation or digest verification in Host Manager Agent");
   }
   const tools: ToolDefinition[] = [
-    {
-      ...managerAgentToolSpec("ui_get_state"),
-      async handler(args) {
-        const result = await invokeHomeRailBrowserUiTool("ui_get_state", args);
-        return { content: [{ type: "text", text: short(result) }] };
+    ...HOMERAIL_UI_TOOL_NAMES.map((name) => ({
+      ...managerAgentToolSpec(name),
+      async handler(args: Record<string, unknown>) {
+        const result = await invokeHomeRailBrowserUiTool(name, args);
+        return { content: [{ type: "text" as const, text: short(result) }] };
       },
-    },
-    {
-      ...managerAgentToolSpec("ui_open_surface"),
-      async handler(args) {
-        const result = await invokeHomeRailBrowserUiTool("ui_open_surface", args);
-        return { content: [{ type: "text", text: short(result) }] };
-      },
-    },
-    {
-      ...managerAgentToolSpec("ui_close_surface"),
-      async handler(args) {
-        const result = await invokeHomeRailBrowserUiTool("ui_close_surface", args);
-        return { content: [{ type: "text", text: short(result) }] };
-      },
-    },
+    })),
     {
       name: "list_projects",
       description: "List projects known by the HomeRail Manager.",

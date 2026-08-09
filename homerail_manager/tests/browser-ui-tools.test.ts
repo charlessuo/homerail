@@ -7,6 +7,7 @@ import {
   browserUiToolRoutesHandler,
   resolveBrowserUiDagRun,
 } from "../src/server/browser-ui-tools.js";
+import type { HomeRailUiToolName } from "homerail-protocol";
 
 let server: Server | null = null;
 
@@ -20,7 +21,7 @@ afterEach(async () => {
 async function routeRequest(input: {
   authorize: boolean;
   body: Record<string, unknown>;
-  invoke?: (name: "ui_get_state", value: unknown) => Promise<unknown>;
+  invoke?: (name: HomeRailUiToolName, value: unknown) => Promise<unknown>;
 }): Promise<{ status: number; body: Record<string, unknown> }> {
   server = createServer((req, res) => {
     browserUiToolRoutesHandler(req, res, {
@@ -105,5 +106,27 @@ describe("Manager browser UI target resolution", () => {
     });
     expect(String(response.body.error)).toContain("unsupported field: run_id");
     expect(invoke).not.toHaveBeenCalled();
+  });
+
+  it("forwards an exact widget revision through the authorized Manager boundary", async () => {
+    const invoke = vi.fn(async () => ({ ok: true, widget: { widget_id: "widget-one" } }));
+    const input = {
+      document_id: "document-one",
+      document_revision: 4,
+      widget_id: "widget-one",
+      widget_revision: 2,
+      expanded: true,
+    };
+    const response = await routeRequest({
+      authorize: true,
+      body: { name: "ui_set_widget_expanded", input },
+      invoke,
+    });
+
+    expect(response).toMatchObject({
+      status: 200,
+      body: { success: true, data: { result: { ok: true } } },
+    });
+    expect(invoke).toHaveBeenCalledWith("ui_set_widget_expanded", input);
   });
 });

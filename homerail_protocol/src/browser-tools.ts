@@ -21,6 +21,9 @@ export const HOMERAIL_UI_TOOL_NAMES = [
   "ui_get_state",
   "ui_open_surface",
   "ui_close_surface",
+  "ui_describe_widget",
+  "ui_focus_widget",
+  "ui_set_widget_expanded",
 ] as const;
 export type HomeRailUiToolName = (typeof HOMERAIL_UI_TOOL_NAMES)[number];
 export const BROWSER_TOOLS_CAPABILITIES = ["catalog", "act"] as const;
@@ -49,6 +52,31 @@ const surfaceSchema = Object.freeze({
   enum: HOMERAIL_UI_SURFACES,
 });
 
+const stableIdentitySchema = Object.freeze({
+  type: "string",
+  minLength: 1,
+  maxLength: 256,
+});
+
+const stableRevisionSchema = Object.freeze({
+  type: "integer",
+  minimum: 0,
+});
+
+const widgetTargetProperties = Object.freeze({
+  document_id: stableIdentitySchema,
+  document_revision: stableRevisionSchema,
+  widget_id: stableIdentitySchema,
+  widget_revision: stableRevisionSchema,
+});
+
+const widgetTargetRequired = Object.freeze([
+  "document_id",
+  "document_revision",
+  "widget_id",
+  "widget_revision",
+]);
+
 /**
  * Stable, trusted catalog shared by Manager tools and the page WebMCP adapter.
  * A query is resolved by Manager when invoked by an Agent. The renderer also
@@ -58,7 +86,7 @@ const surfaceSchema = Object.freeze({
 export const HOMERAIL_UI_TOOL_CONTRACTS: readonly UiToolContract[] = Object.freeze([
   Object.freeze({
     name: "ui_get_state",
-    description: "Read the currently visible HomeRail UI surface and its stable target identity.",
+    description: "Read the visible HomeRail surface and a bounded list of trusted widget identities and revisions.",
     input_schema: emptyObjectSchema,
     effect: "read",
     execution_host: "renderer",
@@ -94,6 +122,48 @@ export const HOMERAIL_UI_TOOL_CONTRACTS: readonly UiToolContract[] = Object.free
     execution_host: "renderer",
     page_exposure: "webmcp_local",
   }),
+  Object.freeze({
+    name: "ui_describe_widget",
+    description: "Describe one currently rendered trusted Generative UI widget at an exact document and widget revision.",
+    input_schema: Object.freeze({
+      type: "object",
+      properties: widgetTargetProperties,
+      required: widgetTargetRequired,
+      additionalProperties: false,
+    }),
+    effect: "read",
+    execution_host: "renderer",
+    page_exposure: "webmcp_local",
+  }),
+  Object.freeze({
+    name: "ui_focus_widget",
+    description: "Focus and scroll one currently rendered trusted Generative UI widget at an exact document and widget revision.",
+    input_schema: Object.freeze({
+      type: "object",
+      properties: widgetTargetProperties,
+      required: widgetTargetRequired,
+      additionalProperties: false,
+    }),
+    effect: "presentational",
+    execution_host: "renderer",
+    page_exposure: "webmcp_local",
+  }),
+  Object.freeze({
+    name: "ui_set_widget_expanded",
+    description: "Set the expanded presentation state of one currently rendered trusted Generative UI widget at an exact revision.",
+    input_schema: Object.freeze({
+      type: "object",
+      properties: Object.freeze({
+        ...widgetTargetProperties,
+        expanded: Object.freeze({ type: "boolean" }),
+      }),
+      required: Object.freeze([...widgetTargetRequired, "expanded"]),
+      additionalProperties: false,
+    }),
+    effect: "presentational",
+    execution_host: "renderer",
+    page_exposure: "webmcp_local",
+  }),
 ]);
 
 export function homeRailUiToolContract(name: string): UiToolContract | undefined {
@@ -116,6 +186,33 @@ function browserToolInputString(value: unknown, field: string): string {
   return normalized;
 }
 
+function browserToolInputOpaqueId(value: unknown, field: string): string {
+  if (typeof value !== "string") throw new Error(`${field} must be a string`);
+  if (!value.trim() || [...value].length > 256 || /[\u0000-\u001f\u007f]/.test(value)) {
+    throw new Error(`${field} must contain 1-256 printable characters`);
+  }
+  // Generative UI opaque IDs are exact canonical identities. In particular,
+  // its frozen schema permits leading and trailing spaces, so normalizing here
+  // would merge otherwise distinct documents or widgets.
+  return value;
+}
+
+function browserToolInputRevision(value: unknown, field: string): number {
+  if (!Number.isSafeInteger(value) || (value as number) < 0) {
+    throw new Error(`${field} must be a non-negative safe integer`);
+  }
+  return value as number;
+}
+
+function browserWidgetTargetInput(input: Record<string, unknown>): Record<string, unknown> {
+  return {
+    document_id: browserToolInputOpaqueId(input.document_id, "document_id"),
+    document_revision: browserToolInputRevision(input.document_revision, "document_revision"),
+    widget_id: browserToolInputOpaqueId(input.widget_id, "widget_id"),
+    widget_revision: browserToolInputRevision(input.widget_revision, "widget_revision"),
+  };
+}
+
 /**
  * Validate and normalize an invocation against the frozen browser-tools.v1
  * contract. Callers use this at every trusted execution boundary instead of
@@ -132,6 +229,10 @@ export function validateHomeRailUiToolInput(
       ? new Set(["surface", "entity_id", "query"])
       : name === "ui_close_surface"
         ? new Set(["surface"])
+        : name === "ui_describe_widget" || name === "ui_focus_widget"
+          ? new Set(["document_id", "document_revision", "widget_id", "widget_revision"])
+          : name === "ui_set_widget_expanded"
+            ? new Set(["document_id", "document_revision", "widget_id", "widget_revision", "expanded"])
         : null;
   if (!allowed) throw new Error(`Unknown HomeRail UI tool: ${String(name)}`);
 
@@ -140,6 +241,17 @@ export function validateHomeRailUiToolInput(
     throw new Error(`${name} input contains unsupported field: ${unexpected[0]}`);
   }
   if (name === "ui_get_state") return {};
+
+  if (
+    name === "ui_describe_widget"
+    || name === "ui_focus_widget"
+    || name === "ui_set_widget_expanded"
+  ) {
+    const target = browserWidgetTargetInput(input);
+    if (name !== "ui_set_widget_expanded") return target;
+    if (typeof input.expanded !== "boolean") throw new Error("expanded must be a boolean");
+    return { ...target, expanded: input.expanded };
+  }
 
   const surface = browserToolInputString(input.surface, "surface");
   if (surface !== "dag_status") throw new Error(`${name} requires surface=dag_status`);

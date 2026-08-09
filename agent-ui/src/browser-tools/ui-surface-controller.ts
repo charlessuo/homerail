@@ -1,6 +1,12 @@
 import { http } from '@/api/clients/http-client'
 import type { useAgentStore } from '@/stores/agent-store'
 import { validateHomeRailUiToolInput } from 'homerail-protocol'
+import {
+  homeRailUiWidgetRegistry,
+  type HomeRailUiWidgetDescriptor,
+  type HomeRailUiWidgetRegistry,
+  type HomeRailUiWidgetTarget,
+} from './widget-registry'
 
 export interface BrowserToolRunSummary {
   runId: string
@@ -13,6 +19,9 @@ export interface HomeRailUiState {
   active_surface: 'dag_status' | null
   dag_run_id: string | null
   dag_status_view: 'run_list' | 'dag_graph' | null
+  widgets: HomeRailUiWidgetDescriptor[]
+  widgets_truncated: boolean
+  ambiguous_widget_count: number
 }
 
 export interface HomeRailUiSurfaceController {
@@ -20,6 +29,9 @@ export interface HomeRailUiSurfaceController {
   listDagRuns(): Promise<BrowserToolRunSummary[]>
   openDagStatus(runId?: string): Promise<void>
   closeDagStatus(): void
+  describeWidget(target: HomeRailUiWidgetTarget): HomeRailUiWidgetDescriptor
+  focusWidget(target: HomeRailUiWidgetTarget): HomeRailUiWidgetDescriptor
+  setWidgetExpanded(target: HomeRailUiWidgetTarget, expanded: boolean): HomeRailUiWidgetDescriptor
 }
 
 export interface OpenSurfaceInput {
@@ -73,12 +85,38 @@ export async function executeHomeRailUiTool(
   rawInput: unknown,
   controller: HomeRailUiSurfaceController,
 ): Promise<Record<string, unknown>> {
-  if (name !== 'ui_get_state' && name !== 'ui_open_surface' && name !== 'ui_close_surface') {
+  if (
+    name !== 'ui_get_state'
+    && name !== 'ui_open_surface'
+    && name !== 'ui_close_surface'
+    && name !== 'ui_describe_widget'
+    && name !== 'ui_focus_widget'
+    && name !== 'ui_set_widget_expanded'
+  ) {
     throw new Error(`Unknown HomeRail UI tool: ${name}`)
   }
   const input = validateHomeRailUiToolInput(name, rawInput)
   if (name === 'ui_get_state') {
     return { ok: true, state: controller.getState() }
+  }
+
+  if (
+    name === 'ui_describe_widget'
+    || name === 'ui_focus_widget'
+    || name === 'ui_set_widget_expanded'
+  ) {
+    const target: HomeRailUiWidgetTarget = {
+      document_id: input.document_id as string,
+      document_revision: input.document_revision as number,
+      widget_id: input.widget_id as string,
+      widget_revision: input.widget_revision as number,
+    }
+    const widget = name === 'ui_describe_widget'
+      ? controller.describeWidget(target)
+      : name === 'ui_focus_widget'
+        ? controller.focusWidget(target)
+        : controller.setWidgetExpanded(target, input.expanded as boolean)
+    return { ok: true, widget }
   }
 
   const surface = input.surface as 'dag_status'
@@ -109,15 +147,20 @@ export async function executeHomeRailUiTool(
 
 export function createAgentUiSurfaceController(
   store: ReturnType<typeof useAgentStore>,
+  widgets: HomeRailUiWidgetRegistry = homeRailUiWidgetRegistry,
 ): HomeRailUiSurfaceController {
   return {
-    getState: () => ({
-      active_surface: store.runtimeOverlayOpen ? 'dag_status' : null,
-      dag_run_id: store.runtimeOverlayOpen && store.runtimeOverlayView === 'dag_graph'
-        ? store.runtimeOverlayRunId ?? store.currentRunId
-        : null,
-      dag_status_view: store.runtimeOverlayOpen ? store.runtimeOverlayView : null,
-    }),
+    getState: () => {
+      const widgetSnapshot = widgets.snapshot()
+      return {
+        active_surface: store.runtimeOverlayOpen ? 'dag_status' : null,
+        dag_run_id: store.runtimeOverlayOpen && store.runtimeOverlayView === 'dag_graph'
+          ? store.runtimeOverlayRunId ?? store.currentRunId
+          : null,
+        dag_status_view: store.runtimeOverlayOpen ? store.runtimeOverlayView : null,
+        ...widgetSnapshot,
+      }
+    },
     async listDagRuns() {
       const response = await http.get<{ runs?: BrowserToolRunSummary[] }>('/api/runs')
       return Array.isArray(response.data?.runs) ? response.data.runs : []
@@ -130,5 +173,8 @@ export function createAgentUiSurfaceController(
       store.settingsPageOpen = false
     },
     closeDagStatus: () => store.closeRuntimeOverlay(),
+    describeWidget: target => widgets.describe(target),
+    focusWidget: target => widgets.focus(target),
+    setWidgetExpanded: (target, expanded) => widgets.setExpanded(target, expanded),
   }
 }

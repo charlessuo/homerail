@@ -78,6 +78,9 @@ export const MANAGER_AGENT_COMMON_TOOL_NAMES = [
   "ui_get_state",
   "ui_open_surface",
   "ui_close_surface",
+  "ui_describe_widget",
+  "ui_focus_widget",
+  "ui_set_widget_expanded",
   "list_projects",
   "list_skills",
   "read_skill",
@@ -836,6 +839,21 @@ export const MANAGER_AGENT_TOOL_SPECS: Record<ManagerAgentToolName, AgentToolDef
     name: "ui_close_surface",
     description: homeRailUiToolContract("ui_close_surface")!.description,
     input_schema: homeRailUiToolContract("ui_close_surface")!.input_schema,
+  },
+  ui_describe_widget: {
+    name: "ui_describe_widget",
+    description: homeRailUiToolContract("ui_describe_widget")!.description,
+    input_schema: homeRailUiToolContract("ui_describe_widget")!.input_schema,
+  },
+  ui_focus_widget: {
+    name: "ui_focus_widget",
+    description: homeRailUiToolContract("ui_focus_widget")!.description,
+    input_schema: homeRailUiToolContract("ui_focus_widget")!.input_schema,
+  },
+  ui_set_widget_expanded: {
+    name: "ui_set_widget_expanded",
+    description: homeRailUiToolContract("ui_set_widget_expanded")!.description,
+    input_schema: homeRailUiToolContract("ui_set_widget_expanded")!.input_schema,
   },
   list_projects: {
     name: "list_projects",

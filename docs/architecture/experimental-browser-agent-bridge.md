@@ -532,13 +532,13 @@ Keep the first catalog deliberately small:
 
 | Tool | Effect | Route | Delivery | Behavior |
 | --- | --- | --- | --- | --- |
-| `ui_get_state` | read | Renderer through policy broker | First slice | Return the visible trusted surface and stable selected run identity. |
+| `ui_get_state` | read | Renderer through policy broker | First + widget slices | Return the visible trusted surface, selected run identity, and a bounded list of exact rendered widget identities/revisions. |
 | `ui_open_surface` | presentational | Manager resolver + Renderer | First slice | Open a trusted surface directly. For `dag_status`, accept an exact run ID, one unique semantic query, or no target for the run list. |
 | `ui_close_surface` | presentational | Renderer through policy broker | First slice | Close a trusted surface without changing DAG or workspace business state. |
 | `ui_list_actions` | read | Manager | Planned | List actions from the current canonical Generative UI Action Registry projection. |
-| `ui_describe_widget` | read | Manager composite | Planned | Return canonical identity plus bounded Desktop-rendered facts. |
-| `ui_focus_widget` | presentational | Renderer | Planned | Focus/scroll a stable widget without changing canonical business state. |
-| `ui_set_widget_expanded` | presentational | Renderer | Planned | Expand/collapse a supported host-owned panel. |
+| `ui_describe_widget` | read | Renderer through policy broker; later Manager composite | Widget slice | Return canonical identity and bounded trusted-host render facts. Canonical content/inspection augmentation remains later composite work. |
+| `ui_focus_widget` | presentational | Renderer through policy broker | Widget slice | Focus/scroll an exact stable widget without changing canonical business state. |
+| `ui_set_widget_expanded` | presentational | Renderer through policy broker | Widget slice | Set an exact supported host-owned panel's expanded presentation state. |
 | `ui_capture_widget` | read | Manager + Desktop | Planned | Produce a browser-observation Artifact reference after capture authorization. |
 | `ui_evaluate_widget` | read + processing policy | Manager composite | Planned | Ask an authorized image-capable evaluator for a bounded report; local by default, external egress/cost separately confirmed. |
 | `ui_invoke_action` | mutating | Manager | Planned | Invoke a registered Generative UI plugin action through `PluginActionBus`. |
@@ -829,12 +829,16 @@ The first Live integration exposes this stable schema:
 
 - `ui_get_state`;
 - `ui_open_surface`;
-- `ui_close_surface`.
+- `ui_close_surface`;
+- `ui_describe_widget`;
+- `ui_focus_widget`;
+- `ui_set_widget_expanded`.
 
 The observation and canonical-action phases later extend the stable catalog
-with `ui_list_actions`, `ui_describe_widget`, `ui_focus_widget`,
-`ui_set_widget_expanded`, `ui_capture_widget`, `ui_evaluate_widget`, and
-`ui_invoke_action` after their authorization and Artifact paths exist.
+with `ui_list_actions`, `ui_capture_widget`, `ui_evaluate_widget`, and
+`ui_invoke_action` after their authorization and Artifact paths exist. A later
+Manager-composite form of `ui_describe_widget` may add canonical content and
+Desktop inspection facts without weakening its exact revision fence.
 
 `ui_capture_widget` returns an Artifact reference and metadata only. HomeRail's
 current Live tool-result path serializes results as text; an Artifact reference
@@ -1133,6 +1137,58 @@ envelope, observation Artifacts, screenshot/privacy controls, bounded runtime
 inspection, visual evaluation, confirmed plugin actions, and the broader Live
 Voice demonstration. Those remain unchecked below.
 
+## Stable widget interaction slice — 2026-08-09
+
+- [x] `ui_get_state` returns at most 12 trusted rendered widget descriptors,
+      sorted by stable document/widget identity, with exact document and node
+      revisions plus explicit truncation and duplicate-identity counts.
+- [x] Generative UI hosts expose document/node revision and bounded render-state
+      attributes and register semantic host callbacks, never model-authored DOM
+      selectors or coordinates.
+- [x] `ui_describe_widget`, `ui_focus_widget`, and
+      `ui_set_widget_expanded` share one frozen Core/Desktop contract and are
+      projected to page WebMCP, text Manager Agent, Worker Manager Agent, and
+      the existing Live tool catalog.
+- [x] A stale document or widget revision, missing/hidden widget, duplicate
+      stable identity, unsupported field, or failed focus/expansion is rejected
+      before success is reported.
+- [x] Exact Generative UI document/widget IDs are validated without trimming.
+      IDs that differ only by leading or trailing spaces remain distinct, and
+      the Core and Desktop validators enforce the same Unicode length boundary.
+- [x] Historical widget views fail closed: they leave the browser-tool registry
+      and drop exact document/node revision attributes until the current
+      revision is restored. Hidden ancestors also make focus/expand unavailable.
+- [x] Expanded-body locking is owner-counted, so restoring or unmounting one
+      widget cannot unlock the page while another widget remains expanded.
+- [x] Real Electron evidence confirms discovery, Manager invocation, visible
+      focus, expand/restore, stale-revision rejection, disable revocation, and
+      recovery for the six-tool catalog.
+
+### Local end-to-end checklist and result
+
+The 2026-08-09 acceptance run used an isolated `HOMERAIL_HOME` and Electron
+profile. The remote-debugging port and `--no-sandbox` flag existed only on that
+development QA process; neither is present in Desktop product arguments.
+
+| Check | Result | Committed evidence boundary |
+| --- | --- | --- |
+| Fresh default-off first launch | Pass | Full loading cycle completed, the real UI opened, `document.modelContext` was absent on the loading page, Browser Tools stayed disabled/disconnected, and enabling reported restart-required. |
+| Restart with the experiment enabled | Pass | Desktop reported `connected`; Manager exposed one page-scoped provider with all six frozen tool names; CDP `WebMCP.enable` returned those same six registrations. |
+| Real Manager creates a target | Pass | A production Host Codex Manager Voice turn invoked the normal Generative UI tool and committed canonical document revision 1 with one visible `WebMCP E2E Widget`. |
+| Discover, describe, focus, expand | Pass | One subsequent Manager turn called `ui_get_state`, then used its exact four-part target for `ui_describe_widget`, `ui_focus_widget`, and `ui_set_widget_expanded`; every result succeeded. The real article became `document.activeElement`, `data-expanded=true`, and the body lock was active. |
+| Restore after a rejected stale call | Pass | A CDP invocation with widget revision 0 returned `Error` while the live revision remained 1 and expanded. A following exact-revision invocation completed, restored `expanded=false`, and released the body lock. |
+| One-call DAG navigation | Pass | A Manager turn issued only `ui_open_surface(surface=dag_status, query=WebMCP E2E DAG)`; Manager resolved the unique persisted run `webmcp-e2e-run`, and the real DAG Runtime graph opened it. One `ui_close_surface` call restored the Voice canvas. |
+| Turn authorization boundary | Pass | Direct `POST /api/browser-tools/invoke` without a Manager turn credential returned HTTP 403. Deterministic unit tests cover valid Worker turn envelopes, scope, expiry, and replay. |
+| Immediate disable | Pass | Turning the switch off changed Desktop to `disabled`, disconnected both Manager and Live bindings, reduced the page WebMCP catalog to zero tools, and prevented a later Manager turn from satisfying `ui_get_state`. No restart was needed. |
+| Teardown | Pass | Electron, Manager, UI, Node, Agent Browser sessions, test ports, and the isolated runtime were stopped; the ordinary user data home was never used. |
+
+The real Host Codex turn proves the user-facing Agent behavior and the complete
+Manager broker → Browser Tools WS → Desktop CDP → renderer WebMCP path. A future
+repeatable Electron fixture should additionally drive the existing Worker turn
+verifier and `/api/browser-tools/invoke` in-process, so CI covers the authorized
+HTTP adapter without depending on model choice or latency and without adding a
+test-only HTTP backdoor.
+
 ## Delivery completion gates
 
 - [ ] Default-off startup and first-run initialization are unchanged.
@@ -1154,6 +1210,8 @@ Voice demonstration. Those remain unchecked below.
       pretending dormant external MCP CRUD is operational.
 - [ ] A stable HomeRail widget can be described and captured at an exact
       canonical revision.
+- [ ] A stable HomeRail widget can be focused and expanded/restored at an exact
+      canonical revision without selectors, coordinates, or synthetic input.
 - [ ] Screenshot bytes are stored as bounded, access-controlled Artifacts, not
       WebSocket JSON.
 - [ ] Capture is widget-allowlisted and fail-closed on unresolved sensitive

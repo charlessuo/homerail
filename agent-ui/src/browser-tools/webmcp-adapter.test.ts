@@ -30,10 +30,20 @@ describe('WebMCP adapter', () => {
       }),
     }
     const controller: HomeRailUiSurfaceController = {
-      getState: () => ({ active_surface: null, dag_run_id: null, dag_status_view: null }),
+      getState: () => ({
+        active_surface: null,
+        dag_run_id: null,
+        dag_status_view: null,
+        widgets: [],
+        widgets_truncated: false,
+        ambiguous_widget_count: 0,
+      }),
       listDagRuns: async () => [],
       openDagStatus: async () => undefined,
       closeDagStatus: () => undefined,
+      describeWidget: () => { throw new Error('missing') },
+      focusWidget: () => { throw new Error('missing') },
+      setWidgetExpanded: () => { throw new Error('missing') },
     }
 
     const stop = await startHomeRailBrowserTools(controller, { bridge, modelContext })
@@ -41,6 +51,9 @@ describe('WebMCP adapter', () => {
       'ui_get_state',
       'ui_open_surface',
       'ui_close_surface',
+      'ui_describe_widget',
+      'ui_focus_widget',
+      'ui_set_widget_expanded',
     ])
     expect(registrations.every((entry) => entry.signal?.aborted === false)).toBe(true)
 
@@ -55,10 +68,20 @@ describe('WebMCP adapter', () => {
       browserToolsStatus: vi.fn(async () => status(true, false)),
     }
     const controller = {
-      getState: () => ({ active_surface: null, dag_run_id: null, dag_status_view: null }),
+      getState: () => ({
+        active_surface: null,
+        dag_run_id: null,
+        dag_status_view: null,
+        widgets: [],
+        widgets_truncated: false,
+        ambiguous_widget_count: 0,
+      }),
       listDagRuns: async () => [],
       openDagStatus: async () => undefined,
       closeDagStatus: () => undefined,
+      describeWidget: () => { throw new Error('missing') },
+      focusWidget: () => { throw new Error('missing') },
+      setWidgetExpanded: () => { throw new Error('missing') },
     } satisfies HomeRailUiSurfaceController
 
     const stop = await startHomeRailBrowserTools(controller, { bridge, modelContext })

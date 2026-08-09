@@ -59,6 +59,7 @@ import {
   type HomerailPluginToolExecutionEnvelopeV1,
   type ManagerAgentTurnEnvelopeV1,
   HOMERAIL_MANAGER_TURN_HEADER,
+  HOMERAIL_UI_TOOL_NAMES,
 } from "homerail-protocol";
 
 interface ManagerAgentConfig {
@@ -658,7 +659,7 @@ export function createManagerTools(state: {
     throw new Error("Plugin Context failed validation or digest verification in Worker Manager Agent");
   }
   const tools: DagToolDefinition[] = [
-    ...(["ui_get_state", "ui_open_surface", "ui_close_surface"] as const).map((name) => ({
+    ...HOMERAIL_UI_TOOL_NAMES.map((name) => ({
       ...managerAgentToolSpec(name),
       async handler(args: Record<string, unknown>) {
         const body = await requestManager("/browser-tools/invoke", {

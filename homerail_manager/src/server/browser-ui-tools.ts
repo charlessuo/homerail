@@ -104,20 +104,10 @@ export async function invokeHomeRailBrowserUiTool(
     }));
   }
 
-  if (name === "ui_close_surface") {
-    const surface = optionalString(input.surface, "surface");
-    if (!surface || !HOMERAIL_UI_SURFACES.includes(surface as "dag_status")) {
-      throw new Error(`Unsupported UI surface: ${surface ?? "(missing)"}`);
-    }
-    return normalizeWebMcpOutput(await broker.invoke(name, { surface }));
-  }
-
-  if (name === "ui_get_state") {
-    if (Object.keys(input).length) throw new Error("ui_get_state does not accept input fields");
-    return normalizeWebMcpOutput(await broker.invoke(name, {}));
-  }
-
-  throw new Error(`Unsupported HomeRail UI tool: ${name}`);
+  // Every other stable contract has already been normalized above. Manager
+  // remains the policy entry point while the renderer owns these bounded
+  // presentational/read executors.
+  return normalizeWebMcpOutput(await broker.invoke(name, input));
 }
 
 async function readBrowserUiRequest(req: http.IncomingMessage): Promise<Record<string, unknown>> {
