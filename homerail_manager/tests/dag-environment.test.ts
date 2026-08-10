@@ -51,6 +51,7 @@ function fingerprintFixture(): string {
   tempDirs.push(repoRoot);
   const files: Record<string, string> = {
     "homerail_worker/Dockerfile": "FROM node:22\n",
+    "homerail_worker/native/codex-secret-guard.c": "int homerail_guard(void) { return 0; }\n",
     "homerail_worker/scripts/configure-apt-sources.mjs": "export const configureAptSources = true;\n",
     "homerail_worker/package.json": JSON.stringify({
       name: "homerail-worker",
@@ -256,6 +257,17 @@ it("changes the Worker source fingerprint when build-relevant content changes", 
   fs.appendFileSync(
     path.join(repoRoot, "homerail_worker", "src", "index.ts"),
     "export const changed = true;\n",
+  );
+
+  expect(dagWorkerSourceFingerprint(repoRoot)).not.toBe(original);
+});
+
+it("changes the Worker source fingerprint when the native secret guard changes", () => {
+  const repoRoot = fingerprintFixture();
+  const original = dagWorkerSourceFingerprint(repoRoot);
+  fs.appendFileSync(
+    path.join(repoRoot, "homerail_worker", "native", "codex-secret-guard.c"),
+    "int homerail_guard_changed(void) { return 1; }\n",
   );
 
   expect(dagWorkerSourceFingerprint(repoRoot)).not.toBe(original);

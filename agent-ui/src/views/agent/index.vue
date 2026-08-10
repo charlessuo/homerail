@@ -1,7 +1,16 @@
 <script setup lang="ts">
-import { computed, onMounted, watch } from 'vue'
+import {
+  computed,
+  onActivated,
+  onDeactivated,
+  onMounted,
+  onUnmounted,
+  watch,
+} from 'vue'
+import { storeToRefs } from 'pinia'
 import { useRoute } from 'vue-router'
 import { useAgentStore } from '@/stores/agent-store'
+import { useUiStore } from '@/stores/ui-store'
 import AgentChatPanel from '@/components/agent/AgentChatPanel.vue'
 import AgentWorkspace from '@/components/agent/AgentWorkspace.vue'
 import AgentSessionSidebar from '@/components/agent/AgentSessionSidebar.vue'
@@ -14,10 +23,15 @@ import OnboardingWizard from '@/components/agent/onboarding/OnboardingWizard.vue
 import { useOnboardingStatus } from '@/composables/useOnboardingStatus'
 import { resolveVoiceCockpitLifecycle } from '@/agent/voice-cockpit-lifecycle'
 import { PanelRightClose, PanelRightOpen } from 'lucide-vue-next'
+import { startHomeRailBrowserTools } from '@/browser-tools/webmcp-adapter'
+import { createAgentUiSurfaceController } from '@/browser-tools/ui-surface-controller'
+import { createAsyncDisposerGate } from '@/browser-tools/async-disposer-gate'
 
 defineOptions({ name: 'AgentRootView' })
 
 const store = useAgentStore()
+const uiStore = useUiStore()
+const { webBrowserToolsEnabled } = storeToRefs(uiStore)
 const route = useRoute()
 const textModeEnabled = flagEnabled(import.meta.env.VITE_HOMERAIL_ENABLE_TEXT_MODE)
 const voiceOnlyMode = !textModeEnabled
@@ -28,6 +42,7 @@ const voiceCockpitLifecycle = computed(() => resolveVoiceCockpitLifecycle({
   settingsPageOpen: store.settingsPageOpen,
   runtimeOverlayOpen: store.runtimeOverlayOpen,
 }))
+let browserToolsLifecycle: ReturnType<typeof createAsyncDisposerGate> | null = null
 
 const captureRunId = computed(() => {
   const raw = route.query.captureRun
@@ -51,6 +66,26 @@ function isMobileVoiceEntry(): boolean {
   return uaLooksMobile || touchLooksPhone
 }
 
+function startBrowserTools(): void {
+  browserToolsLifecycle?.dispose()
+  const lifecycle = createAsyncDisposerGate()
+  browserToolsLifecycle = lifecycle
+  void lifecycle.start(
+    () => startHomeRailBrowserTools(
+      createAgentUiSurfaceController(store),
+      {
+        webEnabled: webBrowserToolsEnabled,
+        onStatus: status => uiStore.setBrowserToolsRuntimeStatus(status),
+      },
+    ),
+  )
+}
+
+function stopBrowserTools(): void {
+  browserToolsLifecycle?.dispose()
+  browserToolsLifecycle = null
+}
+
 onMounted(async () => {
   if (voiceOnlyMode || isMobileVoiceEntry()) store.voiceCockpitOpen = true
   // 检测配置状态，缺配则弹出新手引导
@@ -59,6 +94,10 @@ onMounted(async () => {
     store.openOnboarding()
   }
 })
+
+onActivated(startBrowserTools)
+onDeactivated(stopBrowserTools)
+onUnmounted(stopBrowserTools)
 
 async function closeOnboarding(): Promise<void> {
   store.closeOnboarding()
@@ -97,9 +136,9 @@ watch(
 
   <DagRuntimeOverlay
     v-else-if="store.runtimeOverlayOpen"
-    :initial-run-id="captureRunId ?? undefined"
+    :initial-run-id="captureRunId ?? store.runtimeOverlayRunId ?? undefined"
     :capture-mode="captureMode"
-    @close="store.runtimeOverlayOpen = false"
+    @close="store.closeRuntimeOverlay()"
   />
 
   <div v-else-if="textModeEnabled" class="agent-shell relative flex h-screen overflow-hidden bg-[var(--hr-bg)] p-4 text-[var(--hr-text-1)]">
@@ -111,7 +150,7 @@ watch(
         show-runtime
         @select-voice="store.voiceCockpitOpen = true"
         @open-settings="store.settingsPageOpen = true"
-        @open-runtime="store.runtimeOverlayOpen = true"
+        @open-runtime="store.openRuntimeOverlay()"
       >
         <template #right>
           <DagResourceStatusPill />

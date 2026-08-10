@@ -72,4 +72,11 @@ describe('resolveVoiceCockpitLifecycle', () => {
     expect(appSource).toContain('<KeepAlive include="AgentRootView">')
     expect(agentViewSource).toContain("defineOptions({ name: 'AgentRootView' })")
   })
+
+  it('deactivates browser UI tools while the cached Agent root is hidden', () => {
+    expect(agentViewSource).toContain('onActivated(startBrowserTools)')
+    expect(agentViewSource).toContain('onDeactivated(stopBrowserTools)')
+    expect(agentViewSource).toContain('onUnmounted(stopBrowserTools)')
+    expect(agentViewSource).toContain('browserToolsLifecycle?.dispose()')
+  })
 })

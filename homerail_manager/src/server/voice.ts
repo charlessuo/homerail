@@ -709,12 +709,39 @@ async function _probeHttpVoiceEndpoint(
   try {
     // HEAD verifies routing without uploading audio or triggering synthesis.
     // A 4xx auth/method response still proves that the endpoint exists.
-    const response = await fetch(candidate.url, {
+    let response = await fetch(candidate.url, {
       method: "HEAD",
       redirect: "follow",
       signal: AbortSignal.timeout(VOICE_ENDPOINT_PROBE_TIMEOUT_MS),
     });
     await response.body?.cancel().catch(() => {});
+
+    // Some OpenAI-compatible servers only register POST handlers and return
+    // 404 for HEAD even though the route exists. Retry known POST-only voice
+    // routes with deliberately incomplete input, which validates routing but
+    // cannot upload audio or trigger synthesis.
+    if (response.status === 404) {
+      const pathname = new URL(candidate.url).pathname.replace(/\/+$/, "").toLowerCase();
+      let fallbackBody: BodyInit | undefined;
+      let fallbackHeaders: HeadersInit | undefined;
+      if (pathname.endsWith("/audio/transcriptions")) {
+        fallbackBody = new FormData();
+      } else if (pathname.endsWith("/audio/speech") || pathname.endsWith("/audio/speech/stream")) {
+        fallbackBody = "{}";
+        fallbackHeaders = { "Content-Type": "application/json" };
+      }
+      if (fallbackBody !== undefined) {
+        response = await fetch(candidate.url, {
+          method: "POST",
+          headers: fallbackHeaders,
+          body: fallbackBody,
+          redirect: "follow",
+          signal: AbortSignal.timeout(VOICE_ENDPOINT_PROBE_TIMEOUT_MS),
+        });
+        await response.body?.cancel().catch(() => {});
+      }
+    }
+
     const status = response.status;
     const ok = status >= 200 && status < 500 && status !== 404;
     const outcome: VoiceEndpointProbeOutcome | undefined =

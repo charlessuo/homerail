@@ -47,6 +47,10 @@ import {
   resolveVoiceSessionProjectRestore,
   VoiceSessionTransitionGuard,
 } from '@/agent/voice-session-restore'
+import {
+  shouldReplaceVoiceWorkspaceForProject,
+  voiceProjectSelectionChanged,
+} from '@/agent/voice-project-selection'
 import { VoiceCurrentSessionWriter } from '@/agent/voice-current-session-writer'
 import {
   CodexLiveVoiceClient,
@@ -440,6 +444,7 @@ let voiceAbort: AbortController | null = null
 // 避免旧 turn 的 handleVoiceStreamEvent 回调往不相关的 workspace 写数据。
 let voiceTurnAbort: AbortController | null = null
 let voiceSessionToken = 0
+let voiceProjectReconcileGeneration = 0
 let voiceHidDevice: any | null = null
 let voiceHidPressed = false
 let voiceGamepadFrame = 0
@@ -1348,6 +1353,7 @@ onMounted(() => {
   document.addEventListener('pointerdown', closeModelMenuOnOutside)
   window.addEventListener('keydown', handleVoiceKeyboardButton, true)
   window.addEventListener('keydown', handleImmersiveKeyboard, true)
+  window.addEventListener('pointerdown', handleImmersiveTouchPointerDown, { passive: true })
   window.addEventListener('pointermove', handleImmersivePointerMove, { passive: true })
   window.addEventListener('keydown', closeModelMenuOnEscape)
   window.addEventListener('gamepadconnected', handleVoiceGamepadConnected)
@@ -1394,7 +1400,7 @@ watch(
 watch(
   () => store.managerProjectId,
   () => {
-    void loadVoiceSessionShortcuts()
+    void reconcileVoiceProjectSelection()
   }
 )
 
@@ -1493,6 +1499,7 @@ onUnmounted(() => {
   document.removeEventListener('pointerdown', closeModelMenuOnOutside)
   window.removeEventListener('keydown', handleVoiceKeyboardButton, true)
   window.removeEventListener('keydown', handleImmersiveKeyboard, true)
+  window.removeEventListener('pointerdown', handleImmersiveTouchPointerDown)
   window.removeEventListener('pointermove', handleImmersivePointerMove)
   window.removeEventListener('keydown', closeModelMenuOnEscape)
   window.removeEventListener('gamepadconnected', handleVoiceGamepadConnected)
@@ -1535,17 +1542,29 @@ function uninstallCodexVoiceTextBridge(): void {
 
 async function startSession(): Promise<void> {
   const previousWorkspace = workspace.value
+  const requestedProjectId = store.managerProjectId || null
   const generation = beginVoiceSessionTransition()
   loading.value = true
   error.value = ''
   try {
-    const restored = await restoreLatestSession()
+    const restored = await restoreLatestSession(requestedProjectId)
     if (!voiceSessionTransitions.isCurrent(generation)) return
+    if (voiceProjectSelectionChanged(requestedProjectId, store.managerProjectId)) {
+      void startSession()
+      return
+    }
     if (restored) {
       workspace.value = restored
+      if (!requestedProjectId && restored.project_id) {
+        store.setManagerProjectId(restored.project_id)
+      }
     } else {
-      const res = await createVoiceSession(store.managerProjectId)
+      const res = await createVoiceSession(requestedProjectId)
       if (!voiceSessionTransitions.isCurrent(generation)) return
+      if (voiceProjectSelectionChanged(requestedProjectId, store.managerProjectId)) {
+        void startSession()
+        return
+      }
       workspace.value = res.data
       // 新建的会话成为当前会话，更新服务端指针（串行化，避免乱序写）。
       submitCurrentSessionWrite(workspace.value?.session_id ?? null, generation)
@@ -1662,8 +1681,25 @@ function isUnusedVoiceSessionItem(item: VoiceSessionItem): boolean {
   )
 }
 
-async function handleVoiceProjectSelected(_projectId: string): Promise<void> {
+async function reconcileVoiceProjectSelection(): Promise<void> {
+  const generation = ++voiceProjectReconcileGeneration
+  // Coalesce rapid project writes and allow initial restoration to publish its
+  // matching workspace before deciding whether this is a user transition.
+  await nextTick()
+  if (generation !== voiceProjectReconcileGeneration) return
+
+  if (!shouldReplaceVoiceWorkspaceForProject(workspace.value, store.managerProjectId)) {
+    await loadVoiceSessionShortcuts()
+    return
+  }
+
+  cancelLocalSpeech('project_switch')
   if (codexLiveVoiceClient) await stopCodexLiveVoice()
+  if (generation !== voiceProjectReconcileGeneration) return
+  if (listening.value) stopVoiceCapture()
+  voiceTurnAbort?.abort()
+  voiceTurnAbort = null
+  loading.value = false
   liveTranscript.value = ''
   lastUserTranscript.value = ''
   resetSubmittedTranscriptClear()
@@ -1750,12 +1786,10 @@ async function stopAgentLoop(): Promise<void> {
   }
 }
 
-async function restoreLatestSession(): Promise<VoiceWorkspace | null> {
-  const projectId = store.managerProjectId || null
+async function restoreLatestSession(projectId: string | null): Promise<VoiceWorkspace | null> {
   const acceptWorkspace = (restored: VoiceWorkspace): VoiceWorkspace | null => {
     const decision = resolveVoiceSessionProjectRestore(projectId, restored.project_id)
     if (!decision.accepted) return null
-    if (!projectId && decision.projectId) store.setManagerProjectId(decision.projectId)
     return restored
   }
   try {
@@ -1772,7 +1806,7 @@ async function restoreLatestSession(): Promise<VoiceWorkspace | null> {
     // 指针端点不可用时 fallback 到最近会话。
   }
   try {
-    const listRes = await listVoiceSessions(store.managerProjectId, 1)
+    const listRes = await listVoiceSessions(projectId, 1)
     const sessionId = listRes.data?.sessions?.[0]?.session_id
     if (!sessionId) return null
     const res = await getVoiceSession(sessionId)
@@ -1784,10 +1818,13 @@ async function restoreLatestSession(): Promise<VoiceWorkspace | null> {
 }
 
 async function loadVoiceSessionShortcuts(): Promise<void> {
+  const projectId = store.managerProjectId || null
   try {
-    const res = await listVoiceSessions(store.managerProjectId, 10)
+    const res = await listVoiceSessions(projectId, 10)
+    if (voiceProjectSelectionChanged(projectId, store.managerProjectId)) return
     voiceSessionShortcuts.value = res.data?.sessions ?? []
   } catch {
+    if (voiceProjectSelectionChanged(projectId, store.managerProjectId)) return
     voiceSessionShortcuts.value = []
   }
 }
@@ -5242,6 +5279,11 @@ function noteLiveVoiceImmersiveInteraction(): void {
   }
 }
 
+function handleImmersiveTouchPointerDown(event: PointerEvent): void {
+  if (event.pointerType !== 'touch' && event.pointerType !== 'pen') return
+  handleImmersivePointerMove()
+}
+
 function handleImmersivePointerMove(): void {
   if (interactionSuspended.value) return
   if (!immersiveMode.value) {
@@ -5416,8 +5458,6 @@ function summarizeTask(value: string): string {
       v-if="fullscreenPromptVisible && isMobileDevice"
       class="voice-fullscreen-gate"
       type="button"
-      @pointerup.prevent="enterMobileFullscreen"
-      @touchend.prevent="enterMobileFullscreen"
       @click="enterMobileFullscreen"
     >
       <span>{{ fullscreenGateTitle }}</span>
@@ -5824,7 +5864,6 @@ function summarizeTask(value: string): string {
             :active-session-id="workspace?.session_id ?? null"
             @collapse="voiceSidebarOpen = false"
             @new-session="createFreshVoiceSession"
-            @project-selected="handleVoiceProjectSelected"
             @session-selected="handleVoiceSessionSelected"
             @session-deleted="handleVoiceSessionDeleted"
           />
