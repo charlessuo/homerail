@@ -19,9 +19,12 @@ export function isProtectedApiMutation(methodValue?: string, urlValue?: string):
 
 /**
  * Authorize a browser mutation using the origin of the request that reached the
- * UI server. This deliberately has no deployment switch or configured Origin:
- * Vite already knows the browser-facing protocol and Host for every request.
- * Manager remains the canonical trust boundary after the proxy hop.
+ * Vite development server. This deliberately has no deployment switch or
+ * configured Origin: Vite's own allowed-host boundary runs before this helper,
+ * which only verifies that the surviving browser Origin matches that Host.
+ * Production named-host pinning belongs to the static UI server and is covered
+ * by its integration tests. Manager remains the canonical trust boundary after
+ * either proxy hop.
  */
 export function authorizeAdminProxyRequest(
   request: UiMutationRequestTrust,

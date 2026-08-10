@@ -520,6 +520,37 @@ describe("static Agent UI mutation proxy", () => {
     expect(managerHits).toBe(1);
   }, 15_000);
 
+  it("rejects an unpinned named Host at the real static proxy even when Origin matches", async () => {
+    let managerHits = 0;
+    const manager = http.createServer((req, res) => {
+      managerHits++;
+      req.resume();
+      res.writeHead(200).end();
+    });
+    servers.push(manager);
+    const managerUrl = await listen(manager, "127.0.0.1");
+    const uiPort = await reservePort();
+    const uiOrigin = `http://127.0.0.1:${uiPort}`;
+    const namedHost = `homerail.lan:${uiPort}`;
+    const namedOrigin = `http://${namedHost}`;
+    await startStaticUi({ port: uiPort, host: "127.0.0.1", origin: uiOrigin, managerUrl });
+
+    for (const path of ["/api/runs", "/api/browser-tools/renderer-ticket"]) {
+      const response = await mutationRequest({
+        protocol: "http",
+        port: uiPort,
+        path,
+        headers: {
+          Host: namedHost,
+          Origin: namedOrigin,
+          "Sec-Fetch-Site": "same-origin",
+        },
+      });
+      expect(response.status, path).toBe(403);
+    }
+    expect(managerHits).toBe(0);
+  }, 15_000);
+
   it("does not trust forged Forwarded or X-Forwarded-Host headers", async () => {
     let managerHits = 0;
     const manager = http.createServer((req, res) => {

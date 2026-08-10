@@ -27,11 +27,11 @@ describe('Vite Manager mutation proxy trust', () => {
     })).toEqual({ allowed: true })
   })
 
-  it('derives LAN self-Origin without configured public URL', () => {
+  it('checks matching Host and Origin inside Vite after its allowed-host boundary', () => {
     expect(authorizeAdminProxyRequest({
       protocol: 'https',
-      host: 'homerail.lan:19194',
-      origin: 'https://homerail.lan:19194',
+      host: 'dev-ui.example.test:19194',
+      origin: 'https://dev-ui.example.test:19194',
       secFetchSite: 'same-origin',
     })).toEqual({ allowed: true })
   })
