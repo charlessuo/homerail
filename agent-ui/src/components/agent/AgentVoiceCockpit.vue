@@ -1,5 +1,14 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
+import {
+  computed,
+  nextTick,
+  onActivated,
+  onDeactivated,
+  onMounted,
+  onUnmounted,
+  ref,
+  watch,
+} from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useAgentStore } from '@/stores/agent-store'
 import { useUiStore } from '@/stores/ui-store'
@@ -180,10 +189,16 @@ const generativeUiShadowPreviewRequested =
 const props = withDefaults(
   defineProps<{
     voiceOnly?: boolean
+    suspended?: boolean
   }>(),
   {
-    voiceOnly: false
+    voiceOnly: false,
+    suspended: false
   }
+)
+const keepAliveDeactivated = ref(false)
+const interactionSuspended = computed(
+  () => props.suspended || keepAliveDeactivated.value,
 )
 const VOICE_LEFT_PANE_KEY = 'omni.voiceCockpit.leftPaneOpen'
 const VOICE_DETAILS_PANE_KEY = 'omni.voiceCockpit.detailsOpen'
@@ -564,14 +579,17 @@ const selectedCodexLiveVoice = computed<CodexLiveVoiceV3Voice>(
     onboardingStatus.value.liveVoiceDefaultVoice ||
     'cove'
 )
-const codexLiveVoiceEffective = computed(
-  () =>
-    codexHarnessActive.value &&
-    codexLiveVoiceEnabled.value &&
-    onboardingStatus.value.liveVoiceEffective
-)
 const codexLiveVoiceSessionActive = computed(
   () => codexLiveVoiceOwnsAudio(codexLiveVoiceState.value)
+)
+const codexLiveVoiceEffective = computed(
+  () =>
+    codexLiveVoiceSessionActive.value ||
+    (
+      codexHarnessActive.value &&
+      codexLiveVoiceEnabled.value &&
+      onboardingStatus.value.liveVoiceEffective
+    )
 )
 const codexLiveVoiceConnecting = computed(
   () =>
@@ -580,6 +598,7 @@ const codexLiveVoiceConnecting = computed(
 )
 const liveVoiceImmersiveActive = computed(
   () =>
+    !interactionSuspended.value &&
     uiStore.liveVoiceImmersiveEnabled &&
     codexLiveVoiceSessionActive.value &&
     !codexLiveVoiceConnecting.value
@@ -1357,6 +1376,14 @@ onMounted(() => {
   setupVoiceStatusSubscription()
 })
 
+onActivated(() => {
+  keepAliveDeactivated.value = false
+})
+
+onDeactivated(() => {
+  keepAliveDeactivated.value = true
+})
+
 watch(
   () => store.onboardingOpen,
   (open, previous) => {
@@ -1367,14 +1394,21 @@ watch(
 watch(
   () => store.managerProjectId,
   () => {
-    if (codexLiveVoiceClient) void stopCodexLiveVoice()
     void loadVoiceSessionShortcuts()
   }
 )
 
-watch(codexLiveVoiceEffective, effective => {
-  if (!effective && codexLiveVoiceClient) void stopCodexLiveVoice()
-})
+watch(
+  interactionSuspended,
+  (suspended) => {
+    if (!suspended) return
+    modelMenuOpen.value = false
+    voiceHidPressed = false
+    voiceGamepadPressedButtons = new Set()
+    voiceGamepadPressedButtonIds.value = new Set()
+    voiceGamepadAxisLocks = new Set()
+  },
+)
 
 watch(
   liveVoiceImmersiveActive,
@@ -3004,6 +3038,7 @@ async function setCodexLiveVoiceEnabled(enabled: boolean): Promise<void> {
   try {
     const response = await updateVoiceAgentConfig({ live_voice_enabled: enabled })
     voiceAgentConfig.value = response.data
+    if (!enabled && codexLiveVoiceClient) await stopCodexLiveVoice()
     await refreshOnboarding()
   } catch (err: any) {
     voiceConfigError.value = err?.message || t('voice.model.liveVoiceSaveFailed')
@@ -4146,6 +4181,7 @@ async function setupVoiceHidControl(): Promise<void> {
 }
 
 function handleVoiceKeyboardButton(event: KeyboardEvent): void {
+  if (interactionSuspended.value) return
   const binding = voiceKeyboardBinding.value
   if (!binding) return
   const target = event.target as HTMLElement | null
@@ -4168,6 +4204,10 @@ function handleVoiceHidReport(event: any): void {
   if (!binding) return
   if (event.reportId !== binding.reportId) return
   const pressed = hidReportMatchesBinding(binding, event)
+  if (interactionSuspended.value) {
+    voiceHidPressed = pressed
+    return
+  }
   if (pressed && !voiceHidPressed) {
     voiceHidPressed = true
     toggleListening()
@@ -4285,10 +4325,12 @@ function handleVoiceGamepadButtons(gamepad: Gamepad): void {
   gamepad.buttons.forEach((button, index) => {
     if (!button.pressed) return
     nextPressed.add(index)
-    if (!voiceGamepadPressedButtons.has(index)) handleVoiceGamepadButton(index)
+    if (!interactionSuspended.value && !voiceGamepadPressedButtons.has(index)) {
+      handleVoiceGamepadButton(index)
+    }
   })
   voiceGamepadPressedButtons = nextPressed
-  voiceGamepadPressedButtonIds.value = nextPressed
+  voiceGamepadPressedButtonIds.value = interactionSuspended.value ? new Set() : nextPressed
 }
 
 function gamepadButtonActive(index: number): boolean {
@@ -4311,7 +4353,10 @@ function handleNativeVoiceGamepadButton(event: Event): void {
   }
   if (detail.repeat || voiceGamepadPressedButtons.has(detail.index)) return
   voiceGamepadPressedButtons.add(detail.index)
-  voiceGamepadPressedButtonIds.value = new Set(voiceGamepadPressedButtons)
+  voiceGamepadPressedButtonIds.value = interactionSuspended.value
+    ? new Set()
+    : new Set(voiceGamepadPressedButtons)
+  if (interactionSuspended.value) return
   handleVoiceGamepadButton(detail.index)
 }
 
@@ -4319,6 +4364,7 @@ function handleNativeVoiceGamepadAnalog(event: Event): void {
   const detail = nativeGamepadEventDetail<NativeGamepadAnalogDetail>(event)
   if (!detail) return
   markNativeGamepadConnected()
+  if (interactionSuspended.value) return
   nativeGamepadAnalogAt = performance.now()
   handleVoiceGamepadAxisDirection(detail.hatX ?? 0, 'left', 'right')
   handleVoiceGamepadAxisDirection(detail.hatY ?? 0, 'up', 'down')
@@ -4343,6 +4389,10 @@ function currentVoiceGamepadInputContext(): VoiceGamepadInputContext {
 }
 
 function handleVoiceGamepadAxes(gamepad: Gamepad): void {
+  if (interactionSuspended.value) {
+    voiceGamepadAxisLocks = new Set()
+    return
+  }
   handleVoiceGamepadAxisDirection(gamepad.axes[0] ?? 0, 'left', 'right')
   handleVoiceGamepadAxisDirection(gamepad.axes[1] ?? 0, 'up', 'down')
   if (performance.now() - nativeGamepadAnalogAt > 80) {
@@ -4697,10 +4747,6 @@ function updateNativeVoiceWaveform(samples: Float32Array): void {
 }
 
 function stopVoiceCapture(): void {
-  if (codexLiveVoiceClient) {
-    void stopCodexLiveVoice()
-    return
-  }
   voiceSessionToken += 1
   voiceAbort?.abort()
   voiceAbort = null
@@ -5197,6 +5243,7 @@ function noteLiveVoiceImmersiveInteraction(): void {
 }
 
 function handleImmersivePointerMove(): void {
+  if (interactionSuspended.value) return
   if (!immersiveMode.value) {
     noteLiveVoiceImmersiveInteraction()
     return
@@ -5210,6 +5257,7 @@ function handleImmersivePointerMove(): void {
 }
 
 function handleImmersiveKeyboard(event: KeyboardEvent): void {
+  if (interactionSuspended.value) return
   if (!immersiveMode.value) {
     noteLiveVoiceImmersiveInteraction()
     return
@@ -5309,7 +5357,6 @@ async function scrollCardGridToWidget(widgetId?: string): Promise<void> {
 function openSettings(): void {
   exitImmersiveMode()
   store.settingsPageOpen = true
-  store.voiceCockpitOpen = false
 }
 
 function openRuntimeOverlay(): void {
@@ -5340,6 +5387,9 @@ function summarizeTask(value: string): string {
     ref="cockpitRoot"
     class="voice-cockpit fixed inset-0 z-50"
     :class="voiceCockpitClasses"
+    :aria-hidden="interactionSuspended"
+    :inert="interactionSuspended"
+    :data-suspended="interactionSuspended ? 'true' : undefined"
   >
     <div class="voice-cockpit__ambient" />
     <video

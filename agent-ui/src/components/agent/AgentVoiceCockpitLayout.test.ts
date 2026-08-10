@@ -134,6 +134,43 @@ describe('AgentVoiceCockpit responsive layout', () => {
     expect(cockpitSource).toContain('if (codexLiveVoiceClient !== client) return')
   })
 
+  it('suspends hidden cockpit interactions without ending Live Voice', () => {
+    expect(cockpitSource).toContain('suspended?: boolean')
+    expect(cockpitSource).toContain(':inert="interactionSuspended"')
+    expect(cockpitSource).toContain('if (interactionSuspended.value) return')
+
+    const openSettings = cockpitSource.slice(
+      cockpitSource.indexOf('function openSettings(): void'),
+      cockpitSource.indexOf('function openRuntimeOverlay(): void'),
+    )
+    expect(openSettings).toContain('store.settingsPageOpen = true')
+    expect(openSettings).not.toContain('store.voiceCockpitOpen = false')
+  })
+
+  it('only stops Live Voice for explicit actions or session changes', () => {
+    const projectWatcherStart = cockpitSource.indexOf('() => store.managerProjectId')
+    const projectWatcher = cockpitSource.slice(
+      projectWatcherStart,
+      cockpitSource.indexOf('watch(', projectWatcherStart + 1),
+    )
+    expect(projectWatcher).not.toContain('stopCodexLiveVoice')
+    expect(cockpitSource).not.toContain('watch(codexLiveVoiceEffective')
+
+    const stopLegacyCapture = cockpitSource.slice(
+      cockpitSource.indexOf('function stopVoiceCapture(): void'),
+      cockpitSource.indexOf('function closeVoiceInputAfterSubmit(): void'),
+    )
+    expect(stopLegacyCapture).not.toContain('stopCodexLiveVoice')
+
+    const disableLiveVoice = cockpitSource.slice(
+      cockpitSource.indexOf('async function setCodexLiveVoiceEnabled('),
+      cockpitSource.indexOf('async function setCodexLiveVoiceVoice('),
+    )
+    expect(disableLiveVoice).toContain(
+      'if (!enabled && codexLiveVoiceClient) await stopCodexLiveVoice()',
+    )
+  })
+
   it('uses a dense glass model popover with an opaque fallback', () => {
     expect(cockpitSource).toContain('background: var(--hr-bg-raised);')
     expect(cockpitSource).toContain(

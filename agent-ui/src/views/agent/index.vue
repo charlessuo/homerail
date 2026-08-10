@@ -12,13 +12,22 @@ import DagResourceStatusPill from '@/components/agent/DagResourceStatusPill.vue'
 import DagRuntimeOverlay from '@/components/agent/dag-runtime/DagRuntimeOverlay.vue'
 import OnboardingWizard from '@/components/agent/onboarding/OnboardingWizard.vue'
 import { useOnboardingStatus } from '@/composables/useOnboardingStatus'
+import { resolveVoiceCockpitLifecycle } from '@/agent/voice-cockpit-lifecycle'
 import { PanelRightClose, PanelRightOpen } from 'lucide-vue-next'
+
+defineOptions({ name: 'AgentRootView' })
 
 const store = useAgentStore()
 const route = useRoute()
 const textModeEnabled = flagEnabled(import.meta.env.VITE_HOMERAIL_ENABLE_TEXT_MODE)
 const voiceOnlyMode = !textModeEnabled
 const { status: onboardingStatus, refresh: refreshOnboarding } = useOnboardingStatus()
+const voiceCockpitLifecycle = computed(() => resolveVoiceCockpitLifecycle({
+  voiceOnlyMode,
+  voiceCockpitOpen: store.voiceCockpitOpen,
+  settingsPageOpen: store.settingsPageOpen,
+  runtimeOverlayOpen: store.runtimeOverlayOpen,
+}))
 
 const captureRunId = computed(() => {
   const raw = route.query.captureRun
@@ -82,7 +91,9 @@ watch(
 </script>
 
 <template>
-  <AgentSettingsPage v-if="store.settingsPageOpen" />
+  <div v-if="store.settingsPageOpen" class="fixed inset-0 z-[300]">
+    <AgentSettingsPage />
+  </div>
 
   <DagRuntimeOverlay
     v-else-if="store.runtimeOverlayOpen"
@@ -141,8 +152,10 @@ watch(
   </div>
 
   <AgentVoiceCockpit
-    v-if="!store.settingsPageOpen && !store.runtimeOverlayOpen && (voiceOnlyMode || store.voiceCockpitOpen)"
+    v-if="voiceCockpitLifecycle.mounted"
+    v-show="voiceCockpitLifecycle.visible"
     :voice-only="voiceOnlyMode"
+    :suspended="voiceCockpitLifecycle.suspended"
   />
 
   <!-- 新手引导横版小窗（悬浮 overlay，不替换 voice cockpit） -->
