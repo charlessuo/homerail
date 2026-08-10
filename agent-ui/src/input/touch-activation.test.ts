@@ -22,13 +22,14 @@ function pointerEvent(
   return event
 }
 
-// The browser fires its touch compatibility click at the touch coordinates, so
-// tests that emulate it must pass those coordinates. A MouseEvent built with no
-// init has clientX/clientY === 0, which on a real device only happens for
-// keyboard / assistive-tech / programmatic activation — none of which are the
+// The browser fires its touch compatibility click at the touch coordinates
+// with MouseEvent.detail === click count (>= 1), so tests that emulate it must
+// pass those coordinates. A MouseEvent built with no init has clientX/clientY
+// === 0 and detail === 0, which on a real device only happens for keyboard /
+// assistive-tech / programmatic activation — none of which are the
 // compatibility click and none of which this bridge may suppress.
 function compatClick(x: number = TAP_X, y: number = TAP_Y): MouseEvent {
-  return new MouseEvent('click', { bubbles: true, cancelable: true, clientX: x, clientY: y })
+  return new MouseEvent('click', { bubbles: true, cancelable: true, detail: 1, clientX: x, clientY: y })
 }
 
 describe('touch activation bridge', () => {
@@ -138,10 +139,14 @@ describe('touch activation bridge', () => {
     expect(onClick).toHaveBeenCalledTimes(2)
   })
 
-  it('suppresses each compatibility click independently for concurrent multi-touch taps', () => {
-    // Regression for the single-slot pendingNativeClick: two simultaneous taps
-    // on different controls must not let one tap overwrite the other's pending
-    // suppression, which previously caused one control's handler to fire twice.
+  it('consumes pending suppressions per tap rather than from a single shared slot (list mechanism)', () => {
+    // Regression for the single-slot pendingNativeClick: two synthetic
+    // activations that arm suppressions at different locations must each
+    // suppress their own compatibility click instead of one overwriting the
+    // other, which previously let the first control's handler double-fire.
+    // Both taps here are primary pointers; this exercises the pending list
+    // directly. Real multi-touch hardware only has one primary touch contact
+    // at a time (see the next test for that realistic case).
     const buttonA = document.createElement('button')
     const buttonB = document.createElement('button')
     const onClickA = vi.fn()
@@ -166,6 +171,30 @@ describe('touch activation bridge', () => {
     expect(onClickB).toHaveBeenCalledOnce()
   })
 
+  it('only the primary touch contact triggers synthetic activation; a second finger falls back to the native click', () => {
+    // Per the Pointer Events model there is at most one primary pointer per
+    // type, so a real second touch contact has isPrimary === false. It must
+    // not fire a synthetic click (the onPointerDown guard skips it); its
+    // activation is delivered later by the browser's native compatibility
+    // click, and — because no pending suppression was armed for it — that
+    // click runs the handler exactly once. This pins the intended
+    // single-primary-finger behavior of the bridge.
+    const button = document.createElement('button')
+    const onClick = vi.fn()
+    button.addEventListener('click', onClick)
+    document.body.appendChild(button)
+    cleanup = installTouchActivation(document)
+
+    button.dispatchEvent(pointerEvent('pointerdown', { pointerId: 9, clientX: 30, clientY: 30, isPrimary: false }))
+    button.dispatchEvent(pointerEvent('pointerup', { pointerId: 9, clientX: 30, clientY: 30, isPrimary: false }))
+    // No synthetic activation for the non-primary finger.
+    expect(onClick).not.toHaveBeenCalled()
+
+    // The browser's compatibility click then runs the handler once.
+    button.dispatchEvent(compatClick(30, 30))
+    expect(onClick).toHaveBeenCalledOnce()
+  })
+
   it('suppresses a compatibility click retargeted to a different element after a DOM mutation', () => {
     // Regression for the ghost-click window: the synthetic click may mutate the
     // DOM under the tap point (open a popover, close the fullscreen gate), so
@@ -183,8 +212,8 @@ describe('touch activation bridge', () => {
     document.body.appendChild(laterSibling)
     cleanup = installTouchActivation(document)
 
-    button.dispatchEvent(pointerEvent('pointerdown', { pointerId: 9 }))
-    button.dispatchEvent(pointerEvent('pointerup', { pointerId: 9 }))
+    button.dispatchEvent(pointerEvent('pointerdown', { pointerId: 10 }))
+    button.dispatchEvent(pointerEvent('pointerup', { pointerId: 10 }))
     expect(onButtonClick).toHaveBeenCalledOnce()
 
     // The compatibility click lands at the original tap coordinates but on a
@@ -192,5 +221,25 @@ describe('touch activation bridge', () => {
     // not cause a second navigation/activation.
     laterSibling.dispatchEvent(compatClick(TAP_X, TAP_Y))
     expect(onSiblingClick).not.toHaveBeenCalled()
+  })
+
+  it('still suppresses a real compatibility click landing at viewport (0,0)', () => {
+    // Regression for the origin heuristic: a genuine touch tap at the extreme
+    // top-left corner produces a compatibility click at clientX/Y === 0 with
+    // detail === 1. Unlike keyboard/AT/programmatic activation (detail === 0),
+    // this IS the compatibility click for an armed tap and must be suppressed,
+    // otherwise the control would activate twice for one physical tap.
+    const button = document.createElement('button')
+    const onClick = vi.fn()
+    button.addEventListener('click', onClick)
+    document.body.appendChild(button)
+    cleanup = installTouchActivation(document)
+
+    button.dispatchEvent(pointerEvent('pointerdown', { pointerId: 11, clientX: 0, clientY: 0 }))
+    button.dispatchEvent(pointerEvent('pointerup', { pointerId: 11, clientX: 0, clientY: 0 }))
+    expect(onClick).toHaveBeenCalledOnce()
+
+    button.dispatchEvent(compatClick(0, 0))
+    expect(onClick).toHaveBeenCalledOnce()
   })
 })

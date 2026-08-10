@@ -138,11 +138,14 @@ export function installTouchActivation(root: Document | HTMLElement = document):
     pruneExpired()
     if (pendingCompatClicks.length === 0) return
     // Keyboard Enter/Space activation, assistive-tech activation, and
-    // programmatic el.click() all carry clientX/clientY === 0; the browser's
-    // touch compatibility click always fires at the touch point. An origin
-    // click is therefore never the compat click and must never be suppressed,
-    // even when a recent tap armed a suppression for the same control.
-    if (event.clientX === 0 && event.clientY === 0) return
+    // programmatic el.click() are not real pointer-driven clicks: per the UI
+    // Events spec they carry MouseEvent.detail === 0, whereas a real mouse or
+    // touch-compatibility click carries detail >= 1. Only the former must never
+    // be suppressed (they are genuine activations of the focused control, even
+    // when a recent touch tap armed a suppression at the same location). A real
+    // compatibility click landing at the viewport corner (clientX/Y === 0) is
+    // therefore still matched by location and suppressed.
+    if (event.detail === 0) return
     for (let i = 0; i < pendingCompatClicks.length; i++) {
       const pending = pendingCompatClicks[i]
       if (
