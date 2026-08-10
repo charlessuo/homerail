@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const http = vi.hoisted(() => ({
+  delete: vi.fn(),
+  get: vi.fn(),
   getBaseURL: vi.fn(),
   post: vi.fn(),
 }))
@@ -9,9 +11,14 @@ vi.mock('@/api/clients/http-client', () => ({ http }))
 
 import { setDesktopBrowserToolsTransportAvailable } from '@/browser-tools/browser-renderer-bridge'
 import {
+  closeVoiceSession,
   codexLiveVoiceWebSocketUrl,
   confirmVoiceTask,
+  getVoiceSession,
+  notifyVoiceSession,
+  refreshVoiceManagerStatus,
   sendVoiceTurn,
+  stopVoiceMonitor,
   streamConfirmVoiceTask,
   streamVoiceTurn,
 } from './voice-agent-api'
@@ -41,6 +48,31 @@ describe('codexLiveVoiceWebSocketUrl', () => {
     expect(codexLiveVoiceWebSocketUrl('voice-1')).toBe(
       'ws://127.0.0.1:19191/api/voice-agent/sessions/voice-1/live',
     )
+  })
+
+  it('encodes reserved characters in every non-streaming voice-session path', async () => {
+    const sessionId = 'voice / 中文'
+    const base = '/api/voice-agent/sessions/voice%20%2F%20%E4%B8%AD%E6%96%87'
+    http.get.mockResolvedValue({ success: true, data: {} })
+    http.post.mockResolvedValue({ success: true, data: {} })
+    http.delete.mockResolvedValue({ success: true, data: {} })
+
+    await getVoiceSession(sessionId)
+    await refreshVoiceManagerStatus(sessionId)
+    await closeVoiceSession(sessionId)
+    await stopVoiceMonitor(sessionId)
+    await notifyVoiceSession(sessionId, 'title', 'body')
+
+    expect(http.get).toHaveBeenCalledWith(base)
+    expect(http.delete).toHaveBeenCalledWith(base)
+    expect(http.post).toHaveBeenCalledWith(`${base}/manager-status`, {})
+    expect(http.post).toHaveBeenCalledWith(`${base}/monitor/stop`, {})
+    expect(http.post).toHaveBeenCalledWith(`${base}/notifications`, {
+      title: 'title',
+      body: 'body',
+      priority: 'normal',
+      spoken_text: undefined,
+    })
   })
 
   it('falls back to the current browser origin when no API base is configured', () => {
