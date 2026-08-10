@@ -1329,6 +1329,7 @@ onMounted(() => {
   document.addEventListener('pointerdown', closeModelMenuOnOutside)
   window.addEventListener('keydown', handleVoiceKeyboardButton, true)
   window.addEventListener('keydown', handleImmersiveKeyboard, true)
+  window.addEventListener('pointerdown', handleImmersiveTouchPointerDown, { passive: true })
   window.addEventListener('pointermove', handleImmersivePointerMove, { passive: true })
   window.addEventListener('keydown', closeModelMenuOnEscape)
   window.addEventListener('gamepadconnected', handleVoiceGamepadConnected)
@@ -1459,6 +1460,7 @@ onUnmounted(() => {
   document.removeEventListener('pointerdown', closeModelMenuOnOutside)
   window.removeEventListener('keydown', handleVoiceKeyboardButton, true)
   window.removeEventListener('keydown', handleImmersiveKeyboard, true)
+  window.removeEventListener('pointerdown', handleImmersiveTouchPointerDown)
   window.removeEventListener('pointermove', handleImmersivePointerMove)
   window.removeEventListener('keydown', closeModelMenuOnEscape)
   window.removeEventListener('gamepadconnected', handleVoiceGamepadConnected)
@@ -5196,6 +5198,11 @@ function noteLiveVoiceImmersiveInteraction(): void {
   }
 }
 
+function handleImmersiveTouchPointerDown(event: PointerEvent): void {
+  if (event.pointerType !== 'touch' && event.pointerType !== 'pen') return
+  handleImmersivePointerMove()
+}
+
 function handleImmersivePointerMove(): void {
   if (!immersiveMode.value) {
     noteLiveVoiceImmersiveInteraction()
@@ -5366,8 +5373,6 @@ function summarizeTask(value: string): string {
       v-if="fullscreenPromptVisible && isMobileDevice"
       class="voice-fullscreen-gate"
       type="button"
-      @pointerup.prevent="enterMobileFullscreen"
-      @touchend.prevent="enterMobileFullscreen"
       @click="enterMobileFullscreen"
     >
       <span>{{ fullscreenGateTitle }}</span>

@@ -221,6 +221,22 @@ describe('AgentVoiceCockpit responsive layout', () => {
     )
   })
 
+  it('reveals the immersive exit control from direct touch and pen input', () => {
+    expect(cockpitSource).toContain(
+      'function handleImmersiveTouchPointerDown(event: PointerEvent): void'
+    )
+    expect(cockpitSource).toContain(
+      "event.pointerType !== 'touch' && event.pointerType !== 'pen'"
+    )
+    expect(cockpitSource).toContain(
+      "window.addEventListener('pointerdown', handleImmersiveTouchPointerDown"
+    )
+    expect(cockpitSource).toContain(
+      "window.removeEventListener('pointerdown', handleImmersiveTouchPointerDown)"
+    )
+    expect(cockpitSource).toContain('handleImmersivePointerMove()')
+  })
+
   it('temporarily reveals Live Voice controls and returns after interaction becomes idle', () => {
     expect(cockpitSource).toContain('const IMMERSIVE_RETURN_IDLE_MS = 3200')
     expect(cockpitSource).toContain('function suspendLiveVoiceImmersiveMode(): void')
