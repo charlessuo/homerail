@@ -11,6 +11,13 @@ const ACTIVATABLE_SELECTOR = [
 const MAX_TAP_DISTANCE_PX = 12
 const MAX_TAP_DURATION_MS = 800
 const SYNTHETIC_CLICK_WINDOW_MS = 750
+// The browser fires its compatibility click at (almost) exactly the touch
+// coordinates, so we match pending suppressions by location rather than by
+// target identity. This both lets us suppress a compat click that the browser
+// retargets to a different element after the synthetic click mutates the DOM,
+// and avoids swallowing a genuine activation of the same control (which is how
+// the prior target-identity matcher mis-fired).
+const COMPAT_CLICK_TOLERANCE_PX = MAX_TAP_DISTANCE_PX
 
 interface ActiveTouchPointer {
   target: HTMLElement
@@ -19,8 +26,9 @@ interface ActiveTouchPointer {
   startedAt: number
 }
 
-interface PendingNativeClick {
-  target: HTMLElement
+interface PendingCompatClick {
+  x: number
+  y: number
   expiresAt: number
 }
 
@@ -58,8 +66,21 @@ function pointerTravelledTooFar(
  */
 export function installTouchActivation(root: Document | HTMLElement = document): () => void {
   const activePointers = new Map<number, ActiveTouchPointer>()
-  let pendingNativeClick: PendingNativeClick | null = null
+  // One entry per in-flight touch/pen tap whose compatibility click has not
+  // been consumed yet. A list (rather than a single slot) is required so that
+  // concurrent multi-touch taps each suppress their own compatibility click
+  // instead of one tap overwriting another's pending suppression.
+  const pendingCompatClicks: PendingCompatClick[] = []
   let dispatchingSyntheticClick = false
+
+  const pruneExpired = (): void => {
+    const now = performance.now()
+    for (let i = pendingCompatClicks.length - 1; i >= 0; i--) {
+      if (pendingCompatClicks[i].expiresAt <= now) {
+        pendingCompatClicks.splice(i, 1)
+      }
+    }
+  }
 
   const onPointerDown = (event: PointerEvent) => {
     if (!isTouchPointer(event) || !event.isPrimary || event.button !== 0) return
@@ -85,6 +106,12 @@ export function installTouchActivation(root: Document | HTMLElement = document):
   }
 
   const onPointerUp = (event: PointerEvent) => {
+    // A genuine mouse pointer-up means the user switched to mouse input; any
+    // click that follows is a real activation and must never be suppressed.
+    if (!isTouchPointer(event)) {
+      pendingCompatClicks.length = 0
+      return
+    }
     const pointer = activePointers.get(event.pointerId)
     activePointers.delete(event.pointerId)
     if (!pointer || pointerTravelledTooFar(pointer, event)) return
@@ -93,10 +120,11 @@ export function installTouchActivation(root: Document | HTMLElement = document):
     const target = resolveActivatable(event.target)
     if (!target || target !== pointer.target) return
 
-    pendingNativeClick = {
-      target,
+    pendingCompatClicks.push({
+      x: event.clientX,
+      y: event.clientY,
       expiresAt: performance.now() + SYNTHETIC_CLICK_WINDOW_MS,
-    }
+    })
     dispatchingSyntheticClick = true
     try {
       target.click()
@@ -106,18 +134,27 @@ export function installTouchActivation(root: Document | HTMLElement = document):
   }
 
   const onClick = (event: MouseEvent) => {
-    if (dispatchingSyntheticClick || !pendingNativeClick) return
-    const target = resolveActivatable(event.target)
-    if (
-      performance.now() <= pendingNativeClick.expiresAt &&
-      target === pendingNativeClick.target
-    ) {
-      pendingNativeClick = null
-      event.preventDefault()
-      event.stopImmediatePropagation()
-      return
+    if (dispatchingSyntheticClick) return
+    pruneExpired()
+    if (pendingCompatClicks.length === 0) return
+    // Keyboard Enter/Space activation, assistive-tech activation, and
+    // programmatic el.click() all carry clientX/clientY === 0; the browser's
+    // touch compatibility click always fires at the touch point. An origin
+    // click is therefore never the compat click and must never be suppressed,
+    // even when a recent tap armed a suppression for the same control.
+    if (event.clientX === 0 && event.clientY === 0) return
+    for (let i = 0; i < pendingCompatClicks.length; i++) {
+      const pending = pendingCompatClicks[i]
+      if (
+        performance.now() <= pending.expiresAt &&
+        Math.hypot(event.clientX - pending.x, event.clientY - pending.y) <= COMPAT_CLICK_TOLERANCE_PX
+      ) {
+        pendingCompatClicks.splice(i, 1)
+        event.preventDefault()
+        event.stopImmediatePropagation()
+        return
+      }
     }
-    pendingNativeClick = null
   }
 
   root.addEventListener('pointerdown', onPointerDown as EventListener, true)
@@ -133,6 +170,6 @@ export function installTouchActivation(root: Document | HTMLElement = document):
     root.removeEventListener('pointerup', onPointerUp as EventListener, true)
     root.removeEventListener('click', onClick as EventListener, true)
     activePointers.clear()
-    pendingNativeClick = null
+    pendingCompatClicks.length = 0
   }
 }
