@@ -5366,8 +5366,6 @@ function summarizeTask(value: string): string {
       v-if="fullscreenPromptVisible && isMobileDevice"
       class="voice-fullscreen-gate"
       type="button"
-      @pointerup.prevent="enterMobileFullscreen"
-      @touchend.prevent="enterMobileFullscreen"
       @click="enterMobileFullscreen"
     >
       <span>{{ fullscreenGateTitle }}</span>
