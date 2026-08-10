@@ -57,7 +57,11 @@ describe('touch activation bridge', () => {
     expect(onClick).toHaveBeenCalledOnce()
   })
 
-  it('keeps native mouse and keyboard click activation unchanged', () => {
+  it('passes through native mouse, keyboard, and programmatic click activation', () => {
+    // Mouse pointer-up clears all pending suppressions and never arms one of
+    // its own, so the following real mouse click (detail >= 1) is not
+    // suppressed. Keyboard Enter/Space and programmatic el.click() dispatch
+    // detail === 0 events, which the onClick early-return always exempts.
     const button = document.createElement('button')
     const onClick = vi.fn()
     button.addEventListener('click', onClick)
@@ -72,9 +76,53 @@ describe('touch activation bridge', () => {
       pointerId: 2,
       pointerType: 'mouse',
     }))
+    // Real mouse click (detail === 1) must pass through untouched.
+    button.dispatchEvent(new MouseEvent('click', {
+      bubbles: true,
+      cancelable: true,
+      detail: 1,
+      clientX: TAP_X,
+      clientY: TAP_Y,
+    }))
+    // Programmatic el.click() (detail === 0) must also pass through.
     button.click()
 
+    expect(onClick).toHaveBeenCalledTimes(2)
+  })
+
+  it('does not suppress a real mouse click (detail >= 1) that follows a touch tap', () => {
+    // Pins the mouse-clear branch in onPointerUp: a touch tap arms a
+    // suppression at the tap location, then a genuine mouse click at the same
+    // coordinates must still run. The mouse pointer-up must clear the armed
+    // touch suppression before the click arrives.
+    const button = document.createElement('button')
+    const onClick = vi.fn()
+    button.addEventListener('click', onClick)
+    document.body.appendChild(button)
+    cleanup = installTouchActivation(document)
+
+    // Touch tap: synthetic click fires once.
+    button.dispatchEvent(pointerEvent('pointerdown', { pointerId: 12 }))
+    button.dispatchEvent(pointerEvent('pointerup', { pointerId: 12 }))
     expect(onClick).toHaveBeenCalledOnce()
+
+    // A subsequent real mouse click at the same spot must NOT be swallowed.
+    button.dispatchEvent(pointerEvent('pointerdown', {
+      pointerId: 13,
+      pointerType: 'mouse',
+    }))
+    button.dispatchEvent(pointerEvent('pointerup', {
+      pointerId: 13,
+      pointerType: 'mouse',
+    }))
+    button.dispatchEvent(new MouseEvent('click', {
+      bubbles: true,
+      cancelable: true,
+      detail: 1,
+      clientX: TAP_X,
+      clientY: TAP_Y,
+    }))
+    expect(onClick).toHaveBeenCalledTimes(2)
   })
 
   it('does not activate when a touch gesture becomes a scroll', () => {
