@@ -438,7 +438,7 @@ export async function sendVoiceTurn(
   projectId?: string | null,
   selectedNodeId?: string | null,
 ): Promise<BaseResponse<VoiceTurnResponse>> {
-  return http.post<BaseResponse<VoiceTurnResponse>>(`/api/voice-agent/sessions/${sessionId}/turn`, {
+  return http.post<BaseResponse<VoiceTurnResponse>>(`/api/voice-agent/sessions/${encodeURIComponent(sessionId)}/turn`, {
     text,
     project_id: projectId || null,
     selected_node_id: selectedNodeId || null,
@@ -540,7 +540,7 @@ export async function confirmVoiceTask(
 ): Promise<BaseResponse<VoiceConfirmResponse>> {
   void managerProviderName
   void managerModelName
-  return http.post<BaseResponse<VoiceConfirmResponse>>(`/api/voice-agent/sessions/${sessionId}/confirm`, {
+  return http.post<BaseResponse<VoiceConfirmResponse>>(`/api/voice-agent/sessions/${encodeURIComponent(sessionId)}/confirm`, {
     confirmation_id: confirmationId || null,
     ...currentBrowserToolsTurnBinding(),
   }, { timeout: NO_HTTP_TIMEOUT }) as unknown as Promise<BaseResponse<VoiceConfirmResponse>>

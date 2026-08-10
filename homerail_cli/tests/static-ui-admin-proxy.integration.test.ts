@@ -35,10 +35,12 @@ afterEach(async () => {
 describe("static Agent UI mutation proxy", () => {
   it("proxies only the exact same-origin browser renderer WebSocket route", async () => {
     const upgradedPaths: string[] = [];
+    let observedHeaders: http.IncomingHttpHeaders = {};
     const manager = http.createServer();
     manager.on("upgrade", (req, socket) => {
       trackSocket(socket);
       upgradedPaths.push(req.url || "");
+      observedHeaders = req.headers;
       socket.write(
         "HTTP/1.1 101 Switching Protocols\r\n" +
         "Connection: Upgrade\r\n" +
@@ -52,9 +54,19 @@ describe("static Agent UI mutation proxy", () => {
     const uiOrigin = `http://127.0.0.1:${uiPort}`;
     await startStaticUi({ port: uiPort, host: "127.0.0.1", origin: uiOrigin, managerUrl });
 
-    expect(await websocketUpgrade(uiPort, "/ws/browser-tools/renderer", uiOrigin))
+    expect(await websocketUpgrade(uiPort, "/ws/browser-tools/renderer", uiOrigin, {
+      Forwarded: "for=192.0.2.1;host=evil.example",
+      "X-Forwarded-Port": "443",
+      "X-Forwarded-Scheme": "https",
+      "X-Real-IP": "192.0.2.1",
+    }))
       .toContain("HTTP/1.1 101 Switching Protocols");
     expect(upgradedPaths).toEqual(["/ws/browser-tools/renderer"]);
+    expect(observedHeaders.forwarded).toBeUndefined();
+    expect(observedHeaders["x-forwarded-port"]).toBeUndefined();
+    expect(observedHeaders["x-forwarded-scheme"]).toBeUndefined();
+    expect(observedHeaders["x-real-ip"]).toBeUndefined();
+    expect(observedHeaders["sec-fetch-site"]).toBe("same-origin");
 
     for (const candidate of [
       "/ws/browser-tools",
@@ -101,12 +113,18 @@ describe("static Agent UI mutation proxy", () => {
         "Content-Type": "application/json",
         Forwarded: "for=192.0.2.1;host=evil.example",
         "X-Forwarded-Host": "evil.example",
+        "X-Forwarded-Port": "443",
+        "X-Forwarded-Scheme": "https",
+        "X-Real-IP": "192.0.2.1",
       },
       body: "{}",
     })).status).toBe(200);
     expect(managerHits).toBe(1);
     expect(observedHeaders.forwarded).toBeUndefined();
     expect(observedHeaders["x-forwarded-host"]).toBeUndefined();
+    expect(observedHeaders["x-forwarded-port"]).toBeUndefined();
+    expect(observedHeaders["x-forwarded-scheme"]).toBeUndefined();
+    expect(observedHeaders["x-real-ip"]).toBeUndefined();
     expect(observedHeaders["sec-fetch-site"]).toBe("same-origin");
   }, 15_000);
 
@@ -799,7 +817,12 @@ async function reservePort(host = "127.0.0.1"): Promise<number> {
   return port;
 }
 
-async function websocketUpgrade(port: number, requestPath: string, origin?: string): Promise<string> {
+async function websocketUpgrade(
+  port: number,
+  requestPath: string,
+  origin?: string,
+  extraHeaders: Record<string, string> = {},
+): Promise<string> {
   return new Promise<string>((resolve, reject) => {
     const socket = trackSocket(net.createConnection({ host: "127.0.0.1", port }));
     let response = "";
@@ -809,6 +832,9 @@ async function websocketUpgrade(port: number, requestPath: string, origin?: stri
     }, 5_000);
     socket.setEncoding("utf8");
     socket.on("connect", () => {
+      const extraHeaderLines = Object.entries(extraHeaders)
+        .map(([name, value]) => `${name}: ${value}\r\n`)
+        .join("");
       socket.write(
         `GET ${requestPath} HTTP/1.1\r\n` +
         `Host: 127.0.0.1:${port}\r\n` +
@@ -817,6 +843,7 @@ async function websocketUpgrade(port: number, requestPath: string, origin?: stri
         "Sec-WebSocket-Version: 13\r\n" +
         "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n" +
         (origin ? `Origin: ${origin}\r\n` : "") +
+        extraHeaderLines +
         "\r\n",
       );
     });

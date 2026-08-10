@@ -54,9 +54,9 @@ describe('codexLiveVoiceWebSocketUrl', () => {
   it('stamps both regular and streaming voice turns with an explicit transport', async () => {
     setDesktopBrowserToolsTransportAvailable(true)
     http.post.mockResolvedValue({ success: true, data: {} })
-    await sendVoiceTurn('voice-1', 'hello', 'project-1', 'node-1')
+    await sendVoiceTurn('voice / 中文', 'hello', 'project-1', 'node-1')
     expect(http.post).toHaveBeenCalledWith(
-      '/api/voice-agent/sessions/voice-1/turn',
+      '/api/voice-agent/sessions/voice%20%2F%20%E4%B8%AD%E6%96%87/turn',
       {
         text: 'hello',
         project_id: 'project-1',
@@ -82,9 +82,9 @@ describe('codexLiveVoiceWebSocketUrl', () => {
     setDesktopBrowserToolsTransportAvailable(true)
     http.post.mockResolvedValue({ success: true, data: {} })
 
-    await confirmVoiceTask('voice-1', 'confirmation-1')
+    await confirmVoiceTask('voice / 中文', 'confirmation-1')
     expect(http.post).toHaveBeenCalledWith(
-      '/api/voice-agent/sessions/voice-1/confirm',
+      '/api/voice-agent/sessions/voice%20%2F%20%E4%B8%AD%E6%96%87/confirm',
       {
         confirmation_id: 'confirmation-1',
         browser_tools_transport: 'desktop',

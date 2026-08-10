@@ -79,7 +79,19 @@ const ALLOWED_WS_PATHS = new Set([
   "/api/voice/asr/realtime",
   BROWSER_RENDERER_TOOLS_WS_PATH,
 ]);
-const FORWARDING_HEADERS = ["forwarded", "x-forwarded-for", "x-forwarded-host", "x-forwarded-proto"] as const;
+
+function stripForwardingClaims(headers: http.OutgoingHttpHeaders): void {
+  for (const name of Object.keys(headers)) {
+    const normalized = name.toLowerCase();
+    if (
+      normalized === "forwarded"
+      || normalized === "x-real-ip"
+      || normalized.startsWith("x-forwarded-")
+    ) {
+      delete headers[name];
+    }
+  }
+}
 
 const MIME: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
@@ -240,7 +252,7 @@ function proxyHttp(req: http.IncomingMessage, res: http.ServerResponse): void {
     // The browser-facing Host/Origin pair was checked above. Strip any
     // forwarding metadata received from an outer proxy and write the only
     // same-origin marker Manager accepts over this loopback UI-proxy hop.
-    for (const name of FORWARDING_HEADERS) delete headers[name];
+    stripForwardingClaims(headers);
     headers["sec-fetch-site"] = "same-origin";
   }
   const request = target.protocol === "https:" ? https.request : http.request;
@@ -283,7 +295,7 @@ function handleWebSocket(req: http.IncomingMessage, socket: net.Socket, head: Bu
       socket.destroy();
       return;
     }
-    for (const name of FORWARDING_HEADERS) delete headers[name];
+    stripForwardingClaims(headers);
     headers["sec-fetch-site"] = "same-origin";
   }
   let proxySocket: net.Socket | undefined;

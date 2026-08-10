@@ -105,6 +105,7 @@ export function isAllowedGeneralUiWebSocketProxyPath(urlValue: string | undefine
 }
 
 export interface BrowserRendererProxyHeaders {
+  getHeaderNames(): string[]
   removeHeader(name: string): void
   setHeader(name: string, value: string): void
 }
@@ -113,13 +114,15 @@ export function hardenBrowserRendererProxyHeaders(
   headers: BrowserRendererProxyHeaders,
   fetchSite: 'same-origin',
 ): void {
-  for (const name of [
-    'forwarded',
-    'x-forwarded-for',
-    'x-forwarded-host',
-    'x-forwarded-proto',
-  ]) {
-    headers.removeHeader(name)
+  for (const name of headers.getHeaderNames()) {
+    const normalized = name.toLowerCase()
+    if (
+      normalized === 'forwarded'
+      || normalized === 'x-real-ip'
+      || normalized.startsWith('x-forwarded-')
+    ) {
+      headers.removeHeader(name)
+    }
   }
   headers.setHeader('sec-fetch-site', fetchSite)
 }

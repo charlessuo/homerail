@@ -127,14 +127,28 @@ describe('Vite Manager mutation proxy trust', () => {
   it('strips forwarding claims before asserting the verified proxy hop', () => {
     const removeHeader = vi.fn()
     const setHeader = vi.fn()
-    hardenBrowserRendererProxyHeaders({ removeHeader, setHeader }, 'same-origin')
+    const getHeaderNames = vi.fn(() => [
+      'authorization',
+      'Forwarded',
+      'x-forwarded-for',
+      'X-Forwarded-Host',
+      'x-forwarded-proto',
+      'X-Forwarded-Port',
+      'x-forwarded-scheme',
+      'X-Real-IP',
+    ])
+    hardenBrowserRendererProxyHeaders({ getHeaderNames, removeHeader, setHeader }, 'same-origin')
 
     expect(removeHeader.mock.calls.map(([name]) => name)).toEqual([
-      'forwarded',
+      'Forwarded',
       'x-forwarded-for',
-      'x-forwarded-host',
+      'X-Forwarded-Host',
       'x-forwarded-proto',
+      'X-Forwarded-Port',
+      'x-forwarded-scheme',
+      'X-Real-IP',
     ])
+    expect(removeHeader).not.toHaveBeenCalledWith('authorization')
     expect(setHeader).toHaveBeenCalledWith('sec-fetch-site', 'same-origin')
   })
 
