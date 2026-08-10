@@ -199,10 +199,14 @@ export class HomeRailUiWidgetRegistry {
     return this.#resolve(target).descriptor
   }
 
-  focus(target: HomeRailUiWidgetTarget): HomeRailUiWidgetDescriptor {
+  focus(
+    target: HomeRailUiWidgetTarget,
+    onActionCommitted?: () => void,
+  ): HomeRailUiWidgetDescriptor {
     const { entry, descriptor } = this.#resolve(target)
     if (!descriptor.visible) throw new Error('Widget is not currently visible')
     entry.registration.focus()
+    onActionCommitted?.()
     const current = this.#describeCurrent(entry)
     assertExactRevision(target, current)
     if (!current.focused) throw new Error('Widget did not accept focus')
@@ -212,11 +216,13 @@ export class HomeRailUiWidgetRegistry {
   setExpanded(
     target: HomeRailUiWidgetTarget,
     expanded: boolean,
+    onActionCommitted?: () => void,
   ): HomeRailUiWidgetDescriptor {
     if (typeof expanded !== 'boolean') throw new Error('expanded must be a boolean')
     const { entry, descriptor } = this.#resolve(target)
     if (!descriptor.visible) throw new Error('Widget is not currently visible')
     entry.registration.setExpanded(expanded)
+    onActionCommitted?.()
     const current = this.#describeCurrent(entry)
     assertExactRevision(target, current)
     if (current.expanded !== expanded) throw new Error('Widget expansion state did not change')

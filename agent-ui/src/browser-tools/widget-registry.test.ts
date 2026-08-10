@@ -86,6 +86,24 @@ describe('HomeRail UI widget registry', () => {
     expect(setExpanded).not.toHaveBeenCalled()
   })
 
+  it('marks the action committed before a post-action descriptor check fails', () => {
+    const registry = new HomeRailUiWidgetRegistry()
+    let state = descriptor()
+    const committed = vi.fn()
+    registry.register({
+      document_id: state.document_id,
+      widget_id: state.widget_id,
+      describe: () => state,
+      focus: () => {
+        state = { ...state, focused: true, widget_revision: state.widget_revision + 1 }
+      },
+      setExpanded: vi.fn(),
+    })
+
+    expect(() => registry.focus(descriptor(), committed)).toThrow(/revision is stale/)
+    expect(committed).toHaveBeenCalledOnce()
+  })
+
   it('fails closed when the same canonical identity is rendered twice', () => {
     const registry = new HomeRailUiWidgetRegistry()
     const registration = {

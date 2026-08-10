@@ -20,6 +20,7 @@ import DagRuntimeNodeLegend from './DagRuntimeNodeLegend.vue'
 import DagNodeDetailDrawer from './DagNodeDetailDrawer.vue'
 import DagRunList from './DagRunList.vue'
 import { nextDagTraversalNodeId } from './dagTraversal'
+import { hasLoadedDagRunGraph } from './dagRuntimeSelection'
 import type { VoiceGamepadInputContext } from '@/components/agent/voice-gamepad-router'
 import type { VoiceGamepadButtonIntent, VoiceGamepadDirectionIntent } from '@/components/agent/voice-gamepad-router'
 
@@ -197,9 +198,14 @@ function selectRun(runId: string): void {
 }
 
 async function loadSelectedRun(runId: string, sequence: number): Promise<void> {
-  await store.switchToRun(runId)
+  const loaded = await store.switchToRun(runId)
   if (sequence !== runLoadSequence || selectedRunId.value !== runId) return
-  if (!store.dagExecution || store.nodes.length === 0) {
+  if (!hasLoadedDagRunGraph({
+    loaded,
+    requestedRunId: runId,
+    loadedRunId: store.dagExecution?.dag_run_id,
+    nodeCount: store.nodes.length,
+  })) {
     // A short display suffix or unknown id must not masquerade as an idle
     // 0/0 graph. Return to the real run list, where only complete ids can be
     // selected.

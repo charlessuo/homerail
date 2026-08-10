@@ -189,6 +189,37 @@ describe('HomeRail UI surface controller', () => {
     expect(methods.setWidgetExpanded).toHaveBeenCalledWith(target, true)
   })
 
+  it('propagates the commit boundary into a widget action before post-action failure', async () => {
+    const committed = vi.fn()
+    const controller: HomeRailUiSurfaceController = {
+      getState: vi.fn(() => ({
+        active_surface: null,
+        dag_run_id: null,
+        dag_status_view: null,
+        widgets: [widget],
+        widgets_truncated: false,
+        ambiguous_widget_count: 0,
+      })),
+      listDagRuns: vi.fn(async () => runs),
+      openDagStatus: vi.fn(async () => {}),
+      closeDagStatus: vi.fn(),
+      describeWidget: vi.fn(() => widget),
+      focusWidget: vi.fn((_target, onActionCommitted) => {
+        onActionCommitted?.()
+        throw new Error('post-action descriptor check failed')
+      }),
+      setWidgetExpanded: vi.fn(() => widget),
+    }
+
+    await expect(executeHomeRailUiTool('ui_focus_widget', {
+      document_id: widget.document_id,
+      document_revision: widget.document_revision,
+      widget_id: widget.widget_id,
+      widget_revision: widget.widget_revision,
+    }, controller, { onActionCommitted: committed })).rejects.toThrow('post-action descriptor check failed')
+    expect(committed).toHaveBeenCalledOnce()
+  })
+
   it.each([
     ['ui_get_state', { extra: true }],
     ['ui_open_surface', { surface: 'dag_status', run_id: 'run-001' }],

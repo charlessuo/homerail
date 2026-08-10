@@ -499,6 +499,7 @@ describe("Browser renderer tools WebSocket", () => {
     const page = await authenticate(activeHarness, target());
     const invokeMessage = nextJson(page.socket, (message) => message.type === "tool.invoke");
     const invocation = activeHarness.broker.invoke(page.ref, "ui_get_state", {});
+    const outcome = expect(invocation).rejects.toThrow("outcome is indeterminate");
     const request = await invokeMessage;
     const closed = closeInfo(page.socket);
     page.socket.send(JSON.stringify({
@@ -511,7 +512,7 @@ describe("Browser renderer tools WebSocket", () => {
     }));
 
     await expect(closed).resolves.toMatchObject({ code: 4400 });
-    await expect(invocation).rejects.toThrow("outcome is indeterminate");
+    await outcome;
   });
 
   it("sends an exact cancel and accepts a renderer cancelled terminal result", async () => {

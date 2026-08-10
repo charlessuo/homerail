@@ -157,7 +157,7 @@ export async function invokeHomeRailBrowserUiTool(
   const invoke = (toolName: HomeRailUiToolName, toolInput: unknown): Promise<unknown> => (
     binding.browser_tools_transport === "renderer"
       ? rendererBroker!.invoke(rendererTarget!, toolName, toolInput, undefined, options.signal)
-      : desktopBroker!.invoke(toolName, toolInput)
+      : desktopBroker!.invoke(toolName, toolInput, undefined, options.signal)
   );
 
   if (name === "ui_open_surface") {

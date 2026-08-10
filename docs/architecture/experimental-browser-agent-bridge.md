@@ -478,10 +478,11 @@ permission class.
 
 The first vertical slice uses small, discriminated messages with `type` and
 integer `version`: `auth.challenge`, `auth.response`, `auth.ready`,
-`page.catalog`, `page.invalidated`, `tool.invoke`, and `tool.result`. Both sides
-validate strict size limits, identities, digests, deadlines, and fixed tool
-allowlists. This is the implemented compatibility profile for direct HomeRail
-surface control.
+`page.catalog`, `page.invalidated`, `tool.invoke`, `tool.cancel`, and
+`tool.result`. Results carry an explicit `completed`, `failed`, `cancelled`, or
+`indeterminate` terminal state. Both sides validate strict size limits,
+identities, digests, deadlines, and fixed tool allowlists. This is the
+implemented compatibility profile for direct HomeRail surface control.
 
 Before observation or mutating plugin actions are added, that profile evolves
 to the richer envelope below. Those fields and message families are target v1
@@ -1216,6 +1217,10 @@ phases are complete.
       the page catalog, disconnected the provider and bridge, denied a later
       Manager invocation, and detached the privileged runtime without waiting
       for restart.
+- [x] Deterministic Manager and Desktop tests verify that turn cancellation is
+      correlated by `call_id`, forwarded to `WebMCP.cancelInvocation`, and
+      returns an explicit cancelled or indeterminate terminal state instead of
+      silently running until deadline.
 - [x] Deterministic tests cover mutual-proof failure, proxy/Origin rejection,
       strict loopback parsing, descriptor/contract drift, exact UI origin,
       stale catalog invalidation, Manager disconnect cancellation, first-run

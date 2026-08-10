@@ -34,8 +34,15 @@ export interface HomeRailUiSurfaceController {
   ): Promise<void>
   closeDagStatus(): void
   describeWidget(target: HomeRailUiWidgetTarget): HomeRailUiWidgetDescriptor
-  focusWidget(target: HomeRailUiWidgetTarget): HomeRailUiWidgetDescriptor
-  setWidgetExpanded(target: HomeRailUiWidgetTarget, expanded: boolean): HomeRailUiWidgetDescriptor
+  focusWidget(
+    target: HomeRailUiWidgetTarget,
+    onActionCommitted?: () => void,
+  ): HomeRailUiWidgetDescriptor
+  setWidgetExpanded(
+    target: HomeRailUiWidgetTarget,
+    expanded: boolean,
+    onActionCommitted?: () => void,
+  ): HomeRailUiWidgetDescriptor
 }
 
 export interface HomeRailUiToolExecutionContext {
@@ -132,15 +139,16 @@ export async function executeHomeRailUiTool(
       : name === 'ui_focus_widget'
         ? (() => {
             throwIfAborted()
-            const focused = controller.focusWidget(target)
-            context.onActionCommitted?.()
-            return focused
+            return context.onActionCommitted
+              ? controller.focusWidget(target, context.onActionCommitted)
+              : controller.focusWidget(target)
           })()
         : (() => {
             throwIfAborted()
-            const expanded = controller.setWidgetExpanded(target, input.expanded as boolean)
-            context.onActionCommitted?.()
-            return expanded
+            const expanded = input.expanded as boolean
+            return context.onActionCommitted
+              ? controller.setWidgetExpanded(target, expanded, context.onActionCommitted)
+              : controller.setWidgetExpanded(target, expanded)
           })()
     return { ok: true, widget }
   }
@@ -218,7 +226,9 @@ export function createAgentUiSurfaceController(
     },
     closeDagStatus: () => store.closeRuntimeOverlay(),
     describeWidget: target => widgets.describe(target),
-    focusWidget: target => widgets.focus(target),
-    setWidgetExpanded: (target, expanded) => widgets.setExpanded(target, expanded),
+    focusWidget: (target, onActionCommitted) => widgets.focus(target, onActionCommitted),
+    setWidgetExpanded: (target, expanded, onActionCommitted) => (
+      widgets.setExpanded(target, expanded, onActionCommitted)
+    ),
   }
 }

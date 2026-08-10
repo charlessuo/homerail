@@ -202,6 +202,7 @@ describe("Browser Tools WebSocket", () => {
           version: BROWSER_TOOLS_PROTOCOL_VERSION,
           call_id: message.call_id,
           ok: true,
+          terminal_state: "completed",
           output: JSON.stringify({ ok: true, surface: "dag_status", dag_run_id: "run-001" }),
         }));
       });
@@ -218,6 +219,46 @@ describe("Browser Tools WebSocket", () => {
       input: { surface: "dag_status", entity_id: "run-001" },
     });
     await expect(resultPromise).resolves.toContain("run-001");
+  });
+
+  it("propagates one aborted Manager call to Desktop and accepts its cancelled terminal state", async () => {
+    const { broker, url } = await startBroker("browser-tools-cancel-secret");
+    const client = await connectAuthenticated(url, "browser-tools-cancel-secret");
+    client.send(JSON.stringify({
+      type: "page.catalog",
+      version: BROWSER_TOOLS_PROTOCOL_VERSION,
+      page_id: "page-main",
+      tools: [catalogEntry()],
+    }));
+    await waitFor(() => (broker.status().tools as string[]).includes("ui_open_surface"));
+
+    const invoked = new Promise<void>((resolve) => {
+      client.on("message", (raw) => {
+        const message = JSON.parse(raw.toString()) as Record<string, unknown>;
+        if (message.type === "tool.invoke") resolve();
+        if (message.type !== "tool.cancel") return;
+        client.send(JSON.stringify({
+          type: "tool.result",
+          version: BROWSER_TOOLS_PROTOCOL_VERSION,
+          call_id: message.call_id,
+          ok: false,
+          terminal_state: "cancelled",
+          error: "cancelled before a visible action committed",
+        }));
+      });
+    });
+    const abort = new AbortController();
+    const result = broker.invoke(
+      "ui_open_surface",
+      { surface: "dag_status" },
+      5_000,
+      abort.signal,
+    );
+    const rejection = expect(result).rejects.toThrow("was cancelled");
+    await invoked;
+    abort.abort();
+
+    await rejection;
   });
 
   it("rejects a forged Desktop proof", async () => {

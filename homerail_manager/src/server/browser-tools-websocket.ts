@@ -14,6 +14,7 @@ import {
   uiToolContractDigest,
   validateHomeRailUiToolInput,
   type BrowserToolsCatalogEntry,
+  type BrowserToolsCancelMessage,
   type BrowserToolsInvokeMessage,
   type BrowserToolsManagerMessage,
   type HomeRailUiToolName,
@@ -22,6 +23,7 @@ import { isLoopbackRemoteAddress, rejectWebSocketUpgrade } from "./control-plane
 
 const BROWSER_TOOLS_PATH = "/ws/browser-tools";
 const AUTH_TIMEOUT_MS = 5_000;
+const CANCEL_ACK_GRACE_MS = 750;
 const MAX_CATALOG_TOOLS = 32;
 const MAX_PENDING_CALLS = 64;
 
@@ -42,6 +44,10 @@ interface PendingCall {
   resolve: (value: unknown) => void;
   reject: (error: Error) => void;
   timer: ReturnType<typeof setTimeout>;
+  abortSignal?: AbortSignal;
+  abortHandler?: () => void;
+  invocationSent: boolean;
+  cancelRequested?: BrowserToolsCancelMessage["reason"];
 }
 
 function messageBytes(raw: RawData): number {
@@ -157,11 +163,13 @@ export class BrowserToolsBroker {
     toolName: HomeRailUiToolName,
     rawInput: unknown,
     timeoutMs = BROWSER_TOOLS_DEFAULT_TIMEOUT_MS,
+    signal?: AbortSignal,
   ): Promise<unknown> {
     const client = this.client;
     if (!client || client.socket.readyState !== WebSocket.OPEN) {
       throw new Error("HomeRail Browser Tools is disabled or Desktop is not connected");
     }
+    if (signal?.aborted) throw new Error(`HomeRail UI tool was cancelled: ${toolName}`);
     if (this.pending.size >= MAX_PENDING_CALLS) {
       throw new Error("HomeRail Browser Tools has too many pending calls");
     }
@@ -187,11 +195,36 @@ export class BrowserToolsBroker {
     };
 
     return new Promise((resolve, reject) => {
+      const requestCancellation = (
+        reason: string,
+        cancelReason: BrowserToolsCancelMessage["reason"],
+      ): void => {
+        const pending = this.pending.get(callId);
+        if (!pending) return;
+        if (!pending.invocationSent) {
+          const finished = this.takePending(callId);
+          finished?.reject(new Error(`HomeRail UI tool was cancelled before execution: ${reason}`));
+          return;
+        }
+        if (pending.cancelRequested) return;
+        pending.cancelRequested = cancelReason;
+        clearTimeout(pending.timer);
+        this.sendCancel(client, callId, cancelReason);
+        pending.timer = setTimeout(() => {
+          const finished = this.takePending(callId);
+          finished?.reject(new Error(
+            `HomeRail UI tool outcome is indeterminate: Desktop did not acknowledge ${reason}`,
+          ));
+        }, CANCEL_ACK_GRACE_MS);
+        pending.timer.unref?.();
+      };
       const timer = setTimeout(() => {
-        this.pending.delete(callId);
-        reject(new Error(`HomeRail UI tool timed out: ${toolName}`));
+        requestCancellation(`timeout for ${toolName}`, "timeout");
       }, boundedTimeout);
       timer.unref?.();
+      const abortHandler = signal
+        ? () => requestCancellation(`cancellation of ${toolName}`, "cancelled")
+        : undefined;
       this.pending.set(callId, {
         connectionId: client.connectionId,
         pageId: client.pageId!,
@@ -201,13 +234,22 @@ export class BrowserToolsBroker {
         resolve,
         reject,
         timer,
+        abortSignal: signal,
+        abortHandler,
+        invocationSent: false,
       });
+      signal?.addEventListener("abort", abortHandler!, { once: true });
+      if (signal?.aborted) {
+        requestCancellation(`cancellation of ${toolName}`, "cancelled");
+        return;
+      }
       try {
         this.send(client.socket, message);
+        const pending = this.pending.get(callId);
+        if (pending) pending.invocationSent = true;
       } catch (error) {
-        clearTimeout(timer);
-        this.pending.delete(callId);
-        reject(error instanceof Error ? error : new Error(String(error)));
+        const pending = this.takePending(callId);
+        pending?.reject(error instanceof Error ? error : new Error(String(error)));
       }
     });
   }
@@ -356,9 +398,8 @@ export class BrowserToolsBroker {
           && current?.navigation_id === pending.navigationId
           && current.page_descriptor_digest === pending.pageDescriptorDigest
         ) continue;
-        clearTimeout(pending.timer);
-        this.pending.delete(callId);
-        pending.reject(new Error("HomeRail page catalog changed during the UI tool call"));
+        const finished = this.takePending(callId);
+        finished?.reject(new Error("HomeRail page catalog changed during the UI tool call"));
       }
       return;
     }
@@ -377,18 +418,41 @@ export class BrowserToolsBroker {
       const callId = safeString(message.call_id, "call_id");
       const pending = this.pending.get(callId);
       if (!pending || pending.connectionId !== client.connectionId) return;
-      clearTimeout(pending.timer);
-      this.pending.delete(callId);
+      if (typeof message.ok !== "boolean") throw new Error("Browser Tools result ok must be boolean");
+      const terminalState = String(message.terminal_state ?? "");
+      if (!["completed", "failed", "cancelled", "indeterminate"].includes(terminalState)) {
+        throw new Error("Browser Tools result terminal state is invalid");
+      }
       if (message.ok === true) {
+        if (terminalState !== "completed" || message.error !== undefined) {
+          throw new Error("Successful Browser Tools result must be completed without an error");
+        }
         const outputBytes = Buffer.byteLength(JSON.stringify(message.output ?? null), "utf8");
+        const finished = this.takePending(callId)!;
         if (outputBytes > BROWSER_TOOLS_MAX_RESULT_BYTES) {
-          pending.reject(new Error("HomeRail UI tool result exceeded the allowed size"));
+          finished.reject(new Error("HomeRail UI tool result exceeded the allowed size"));
         } else {
-          pending.resolve(message.output ?? null);
+          finished.resolve(message.output ?? null);
         }
       } else {
+        if (terminalState === "completed") {
+          throw new Error("Failed Browser Tools result cannot be completed");
+        }
+        if (message.output !== undefined) {
+          throw new Error("Failed Browser Tools result cannot include output");
+        }
+        if (message.error !== undefined && typeof message.error !== "string") {
+          throw new Error("Browser Tools result error must be a string");
+        }
         const error = typeof message.error === "string" ? message.error.slice(0, 2_000) : "HomeRail UI tool failed";
-        pending.reject(new Error(error));
+        const finished = this.takePending(callId)!;
+        finished.reject(new Error(
+          terminalState === "indeterminate"
+            ? `HomeRail UI tool outcome is indeterminate: ${error}`
+            : terminalState === "cancelled"
+              ? `HomeRail UI tool was cancelled: ${error}`
+              : error,
+        ));
       }
       return;
     }
@@ -401,12 +465,44 @@ export class BrowserToolsBroker {
     socket.send(JSON.stringify(message));
   }
 
+  private sendCancel(
+    client: AuthenticatedClient,
+    callId: string,
+    reason: BrowserToolsCancelMessage["reason"],
+  ): void {
+    if (client.socket.readyState !== WebSocket.OPEN || !client.pageId) return;
+    const pending = this.pending.get(callId);
+    if (!pending) return;
+    try {
+      this.send(client.socket, {
+        type: "tool.cancel",
+        version: BROWSER_TOOLS_PROTOCOL_VERSION,
+        call_id: callId,
+        page_id: pending.pageId,
+        navigation_id: pending.navigationId,
+        reason,
+      });
+    } catch {
+      // Cancellation is best effort; the acknowledgement timer remains authoritative.
+    }
+  }
+
+  private takePending(callId: string): PendingCall | undefined {
+    const pending = this.pending.get(callId);
+    if (!pending) return undefined;
+    this.pending.delete(callId);
+    clearTimeout(pending.timer);
+    if (pending.abortSignal && pending.abortHandler) {
+      pending.abortSignal.removeEventListener("abort", pending.abortHandler);
+    }
+    return pending;
+  }
+
   private rejectPending(connectionId: string, reason: string): void {
     for (const [callId, pending] of this.pending) {
       if (pending.connectionId !== connectionId) continue;
-      clearTimeout(pending.timer);
-      this.pending.delete(callId);
-      pending.reject(new Error(reason));
+      const finished = this.takePending(callId);
+      finished?.reject(new Error(reason));
     }
   }
 

@@ -337,11 +337,21 @@ export interface BrowserToolsInvokeMessage {
   deadline_ms: number;
 }
 
+export interface BrowserToolsCancelMessage {
+  type: "tool.cancel";
+  version: typeof BROWSER_TOOLS_PROTOCOL_VERSION;
+  call_id: string;
+  page_id: string;
+  navigation_id: string;
+  reason: "timeout" | "cancelled";
+}
+
 export interface BrowserToolsResultMessage {
   type: "tool.result";
   version: typeof BROWSER_TOOLS_PROTOCOL_VERSION;
   call_id: string;
   ok: boolean;
+  terminal_state: "completed" | "failed" | "cancelled" | "indeterminate";
   output?: unknown;
   error?: string;
 }
@@ -378,7 +388,8 @@ export type BrowserToolsClientMessage =
 export type BrowserToolsManagerMessage =
   | BrowserToolsAuthChallengeMessage
   | BrowserToolsReadyMessage
-  | BrowserToolsInvokeMessage;
+  | BrowserToolsInvokeMessage
+  | BrowserToolsCancelMessage;
 
 /**
  * Browser-hosted renderer transport for the same frozen HomeRail UI contracts.
