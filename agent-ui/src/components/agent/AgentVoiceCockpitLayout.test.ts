@@ -37,10 +37,10 @@ describe('AgentVoiceCockpit responsive layout', () => {
     expect(sidebarSource).toContain('data-testid="voice-sidebar-add-directory"')
     expect(sidebarSource.match(/h-11 w-11 shrink-0 touch-manipulation/g)).toHaveLength(2)
     expect(sidebarSource.match(/voice-left-rail__header-button/g)).toHaveLength(2)
-    expect(cockpitSource).toContain(
-      '.voice-cockpit--phone-landscape :deep(.voice-left-rail__header-button)'
-    )
-    expect(cockpitSource).toContain('height: 116px;')
+    const headerButtonRule = cockpitSource.match(
+      /\.voice-cockpit--phone-landscape :deep\(\.voice-left-rail__header-button\) \{([\s\S]*?)\n\}/,
+    )?.[1]
+    expect(headerButtonRule).toContain('height: 116px;')
   })
 
   it('keeps model selection independent from incomplete onboarding status', () => {

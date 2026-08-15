@@ -270,10 +270,12 @@ function handleProjectNameInput(event: Event): void {
 
 <template>
   <Teleport :to="teleportTarget">
+    <!-- Keep the modal above cockpit menus (up to 170) while preserving the
+         immersive fullscreen exit control at 220. -->
     <div
       v-if="open"
       data-testid="voice-directory-modal-overlay"
-      class="fixed inset-0 z-[70] flex items-center justify-center bg-[var(--hr-overlay)] px-6 backdrop-blur-sm"
+      class="fixed inset-0 z-[180] flex items-center justify-center bg-[var(--hr-overlay)] px-6 backdrop-blur-sm"
     >
       <section class="flex h-[min(720px,82vh)] w-[min(980px,92vw)] overflow-hidden rounded-[24px] border border-[var(--hr-border-strong)] bg-[var(--hr-panel)] text-[var(--hr-text-1)]" :style="{ boxShadow: 'var(--hr-shadow-floating)' }">
       <aside class="flex w-64 shrink-0 flex-col border-r border-[var(--hr-border)] bg-[var(--hr-surface-1)] p-4">

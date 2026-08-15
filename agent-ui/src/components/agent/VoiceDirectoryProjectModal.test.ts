@@ -148,6 +148,9 @@ describe('VoiceDirectoryProjectModal directory roots', () => {
     expect(overlay).not.toBeNull()
     expect(overlay?.parentElement).toBe(fullscreenHost)
     expect(fullscreenHost.contains(overlay)).toBe(true)
+    const overlayZIndex = Number(overlay?.className.match(/z-\[(\d+)\]/)?.[1])
+    expect(overlayZIndex).toBeGreaterThan(170)
+    expect(overlayZIndex).toBeLessThan(220)
   })
 
   it('tracks fullscreen entry and exit while the modal is open', async () => {
